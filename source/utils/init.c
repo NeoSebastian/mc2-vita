@@ -34,7 +34,8 @@
 // Base address for the Android .so to be loaded at
 #define LOAD_ADDRESS 0x98000000
 
-extern so_module so_mod;
+extern so_module so_mod;      // el módulo principal (ya existe)
+so_module so_mod_aux;         // nuevo: módulo auxiliar (libStormGLOFT.so)
 
 void __kuser_memory_barrier(void) {
     asm("dmb\n");
@@ -118,25 +119,40 @@ void soloader_init_all() {
 
     l_success("kubridge check passed.");
 
-    if (!file_exists(SO_PATH)) {
-        l_fatal("SO could not be located.");
-        fatal_error("Looks like you haven't installed the data files for this "
-                    "port, or they are in an incorrect location. Please make "
-                    "sure that you have %s file exactly at that path.", SO_PATH);
+
+    // Verificar que existan ambas librerías
+    if (!file_exists(SO_PATH_MAIN)) {
+        l_fatal("Main SO could not be located.");
+        fatal_error("Missing %s", SO_PATH_MAIN);
+    }
+    if (!file_exists(SO_PATH_AUX)) {
+        l_fatal("Aux SO could not be located.");
+        fatal_error("Missing %s", SO_PATH_AUX);
     }
 
-    if (so_file_load(&so_mod, SO_PATH, LOAD_ADDRESS) < 0) {
-        l_fatal("SO could not be loaded.");
-        fatal_error("Error: could not load %s.", SO_PATH);
+    // Cargar primero la librería auxiliar (pequeña)
+    if (so_file_load(&so_mod_aux, SO_PATH_AUX, LOAD_ADDRESS) < 0) {
+        l_fatal("Aux SO could not be loaded.");
+        fatal_error("Error loading %s", SO_PATH_AUX);
     }
+    l_success("Aux SO loaded: %s", SO_PATH_AUX);
 
+    // Luego cargar la librería principal
+    if (so_file_load(&so_mod, SO_PATH_MAIN, LOAD_ADDRESS) < 0) {
+        l_fatal("Main SO could not be loaded.");
+        fatal_error("Error loading %s", SO_PATH_MAIN);
+    }
+    l_success("Main SO loaded: %s", SO_PATH_MAIN);
+
+    // NOTA: ya no se necesita la comprobación de videos, la dejamos igual
     if (!file_exists(DATA_PATH"data/briefing/Briefing_M01.mp4")) {
         l_fatal("Videos don't exist.");
-        fatal_error("Error: please unpack videos into "DATA_PATH"data/briefing folder.", SO_PATH);
+        fatal_error("Error: please unpack videos into "DATA_PATH"data/briefing folder.", SO_PATH_MAIN);
     }
 
     settings_load();
     l_success("Settings loaded.");
+
 
     SceKernelAllocMemBlockKernelOpt opt;
     memset(&opt, 0, sizeof(SceKernelAllocMemBlockKernelOpt));
@@ -149,21 +165,32 @@ void soloader_init_all() {
     hook_addr(0x9A000FA0, (uintptr_t)__kuser_memory_barrier);
     hook_addr(0x9A000FC0, (uintptr_t)__kuser_cmpxchg);
 
+
+    // Relocalizar ambas
+    so_relocate(&so_mod_aux);
     so_relocate(&so_mod);
-    l_success("SO relocated.");
+    l_success("Both SOs relocated.");
 
+    // Resolver importaciones de ambas
+    resolve_imports(&so_mod_aux);
     resolve_imports(&so_mod);
-    l_success("SO imports resolved.");
+    l_success("Both SOs imports resolved.");
 
+    // Aplicar parches (todavía usa so_mod, luego lo ajustaremos)
     so_patch();
     l_success("SO patched.");
 
+    // Flush caches de ambas
+    so_flush_caches(&so_mod_aux);
     so_flush_caches(&so_mod);
-    l_success("SO caches flushed.");
+    l_success("Caches flushed.");
 
+    // Inicializar ambas
+    so_initialize(&so_mod_aux);
     so_initialize(&so_mod);
-    l_success("SO initialized.");
+    l_success("Both SOs initialized.");
 
+    // El resto sigue igual
     gl_preload();
     l_success("OpenGL preloaded.");
 
@@ -172,6 +199,9 @@ void soloader_init_all() {
 
     gl_init();
     l_success("OpenGL initialized.");
+
+    so_module so_mod;
+    so_module so_mod_aux;
 
     if (trophies_init() < 0) {
         warning("This game features unlockable trophies but NoTrpDrm is not installed. If you want to be able to unlock trophies, please install it.");

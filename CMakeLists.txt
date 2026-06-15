@@ -11,10 +11,10 @@ project(so_loader C CXX)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 # Vita application configuration
-set(VITA_APP_NAME "MC3: Fallen Nation")
-set(VITA_TITLEID "MOCO30000")
-set(VITA_VPKNAME "ModernCombat3")
-set(VITA_VERSION "01.10")
+set(VITA_APP_NAME "MC2: Black Pegasus")
+set(VITA_TITLEID "MOCO200000")
+set(VITA_VPKNAME "ModernCombat2")
+set(VITA_VERSION "01.00")
 set(VITA_MKSFOEX_FLAGS "-d ATTRIBUTE2=12")
 set(VITA_MAKE_FSELF_FLAGS "${VITA_MAKE_FSELF_FLAGS} -a 0x2800000000000000")
 add_definitions(-DTITLE_ID="${VITA_TITLEID}")
@@ -24,9 +24,12 @@ set(PSVITAIP "192.168.0.198" CACHE STRING "PSVita IP (for FTP access)")
 set(PARSECOREPATH "$ENV{PARSECOREPATH}" CACHE STRING "vita-parse-core main.py")
 
 # Game-specific definitions
-set(DATA_PATH "ux0:data/mc3/" CACHE STRING "Path to data (with trailing /)")
-set(SO_PATH "${DATA_PATH}libModernCombat3.so" CACHE STRING "Path to .so")
-add_definitions(-DDATA_PATH="${DATA_PATH}" -DSO_PATH="${SO_PATH}")
+set(DATA_PATH "ux0:data/mc2/" CACHE STRING "Path to data (with trailing /)")
+set(SO_PATH_MAIN "${DATA_PATH}libsandstorm2.so" CACHE STRING "Path to main .so")
+set(SO_PATH_AUX "${DATA_PATH}libStormGLOFT.so" CACHE STRING "Path to auxiliary .so")
+add_definitions(-DDATA_PATH="${DATA_PATH}"
+                -DSO_PATH_MAIN="${SO_PATH_MAIN}"
+                -DSO_PATH_AUX="${SO_PATH_AUX}")
 
 option(USE_SCELIBC_IO "Use SceLibcBridge for IO and some other std functions" ON)
 if (USE_SCELIBC_IO)

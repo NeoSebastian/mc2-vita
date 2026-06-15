@@ -1,6 +1,6 @@
 <h1 align="center">
 <img align="center" src="extras/screenshots/banner.png" width="50%"><br>
-Modern Combat 3 · PSVita Port
+Modern Combat 2 · PSVita Port
 </h1>
 <p align="center">
   <a href="#setup-instructions-for-players">How to install</a> •
@@ -11,33 +11,34 @@ Modern Combat 3 · PSVita Port
   <a href="#license">License</a>
 </p>
 
-Modern Combat 3: Fallen Nation is a 2011 first-person shooter developed and
-published by Gameloft Montreal for a number of mobile platforms. The game is
-set in 2028 where North Korea, Russia and Pakistan join forces to invade USA,
-thus causing a global war. Modern Combat 3 features an intense 13-mission
-campaign with impressive cinematics and memorable moments.
+Modern Combat 2: Black Pegasus is a 2010 first-person shooter developed and
+published by Gameloft Montreal for mobile platforms. As the second installment
+in the Modern Combat series, the game follows a special operations unit engaged
+in global counter-terrorism missions across a variety of combat environments.
 
-This repository contains a loader of **the Android release of Modern Combat 3 v1.1.7g**,
-based on the [Android SO Loader by TheFloW][gtasa]. The loader provides
-a tailored, minimalistic Android-like environment to run the official ARMv7
-game executable on the PS Vita.
+This repository contains a loader for **the Android release of Modern Combat 2:
+Black Pegasus v1.0.5**, the latest Android version available. Based on the
+[Android SO Loader by TheFloW][gtasa], the loader provides a lightweight
+Android-like runtime environment that enables the original ARMv7 game binary
+to run natively on the PlayStation Vita.
 
 Disclaimer
 ----------------
-
-**Modern Combat 3: Fallen Nation** is copyright © 2012 Gameloft. All rights
+ 
+**Modern Combat 2: Black Pegasus** is copyright © 2010 Gameloft. All rights
 reserved. Gameloft and the Gameloft logo are trademarks of Gameloft in the
 U.S. and/or other countries.
 
-The work presented in this repository is not "official" or produced or
-sanctioned by the owner(s) of the aforementioned trademark(s) or any other
-registered trademark mentioned in this repository.
+The work presented in this repository is not "official" and is not produced,
+endorsed, or sanctioned by the owner(s) of the aforementioned trademark(s) or
+any other registered trademark mentioned in this repository.
 
-This software does not contain the original code, executables, or other
-non-redistributable parts of the original game product. The authors of
-this work do not promote or condone piracy in any way. To launch and play
-the game on their PS Vita device, users must possess their own legally obtained
-copy of the game in the form of an .apk file.
+This software does not contain the original game code, executables, assets, or
+any other non-redistributable components of the original product. The authors
+of this project do not promote or condone piracy in any form. To launch and
+play the game on a PS Vita system, users must own and provide their own legally
+obtained copy of Modern Combat 2: Black Pegasus v1.0.5 in the form of an
+Android APK file.
 
 Setup Instructions (For Players)
 ----------------
@@ -74,8 +75,8 @@ precisely:
 - Make sure you have `libshacccg.suprx` in the `ur0:/data/` folder on your
   console. If you don't, use [ShaRKBR33D][shrkbrd] to get it quickly and easily.
 
-- <u>Legally</u> obtain your copy of Modern Combat 3 for Android in a form
-  of an `.apk` file and data files. This port is tailored for v1.1.7g (latest)
+- <u>Legally</u> obtain your copy of Modern Combat 2 for Android in a form
+  of an `.apk` file and data files. This port is tailored for v1.0.5 (latest)
   version of the game. Other versions may work too but no support is provided
   for them.
 
