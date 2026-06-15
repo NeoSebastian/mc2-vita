@@ -50,16 +50,16 @@ int __kuser_cmpxchg(int32_t oldval, int32_t newval, volatile int32_t *ptr) {
 
 void soloader_init_all() {
 	// Launch `app0:configurator.bin` on `-config` init param
-    sceAppUtilInit(&(SceAppUtilInitParam){}, &(SceAppUtilBootParam){});
-    SceAppUtilAppEventParam eventParam;
-    sceClibMemset(&eventParam, 0, sizeof(SceAppUtilAppEventParam));
-    sceAppUtilReceiveAppEvent(&eventParam);
-    if (eventParam.type == 0x05) {
-        char buffer[2048];
-        sceAppUtilAppEventParseLiveArea(&eventParam, buffer);
-        if (strstr(buffer, "-config"))
-            sceAppMgrLoadExec("app0:/configurator.bin", NULL, NULL);
-    }
+    //sceAppUtilInit(&(SceAppUtilInitParam){}, &(SceAppUtilBootParam){});
+    //SceAppUtilAppEventParam eventParam;
+    //sceClibMemset(&eventParam, 0, sizeof(SceAppUtilAppEventParam));
+    //sceAppUtilReceiveAppEvent(&eventParam);
+    //if (eventParam.type == 0x05) {
+    //    char buffer[2048];
+    //    sceAppUtilAppEventParseLiveArea(&eventParam, buffer);
+    //    if (strstr(buffer, "-config"))
+    //        sceAppMgrLoadExec("app0:/configurator.bin", NULL, NULL);
+    //}
 
     // Set default overclock values
     scePowerSetArmClockFrequency(444);
@@ -148,10 +148,10 @@ void soloader_init_all() {
     l_success("Main SO loaded: %s", SO_PATH_MAIN);
 
     // NOTA: ya no se necesita la comprobación de videos, la dejamos igual
-    if (!file_exists(DATA_PATH"data/briefing/Briefing_M01.mp4")) {
-        l_fatal("Videos don't exist.");
-        fatal_error("Error: please unpack videos into "DATA_PATH"data/briefing folder.", SO_PATH_MAIN);
-    }
+    //if (!file_exists(DATA_PATH"data/briefing/Briefing_M01.mp4")) {
+    //    l_fatal("Videos don't exist.");
+    //    fatal_error("Error: please unpack videos into "DATA_PATH"data/briefing folder.", SO_PATH_MAIN);
+    //}
 
     settings_load();
     l_success("Settings loaded.");
