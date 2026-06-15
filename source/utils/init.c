@@ -8,34 +8,37 @@
  */
 
 #include "utils/init.h"
-
 #include "utils/dialog.h"
 #include "utils/glutil.h"
 #include "utils/logger.h"
 #include "utils/settings.h"
 #include "utils/trophies.h"
 #include "utils/utils.h"
-
 #include <string.h>
-
 #include <psp2/appmgr.h>
 #include <psp2/apputil.h>
 #include <psp2/kernel/clib.h>
 #include <psp2/power.h>
-
 #include <falso_jni/FalsoJNI.h>
 #include <so_util/so_util.h>
 #include <fios/fios.h>
 #include <stdatomic.h>
 #include <kubridge.h>
-#include <psp2kern/kernel/sysmem/memtype.h>
 #include <malloc.h>
 
-// Base address for the Android .so to be loaded at
+// Definiciones manuales para tipos de memoria (si no están en kubridge)
+#ifndef SCE_KERNEL_MEMBLOCK_TYPE_USER_RX
+#define SCE_KERNEL_MEMBLOCK_TYPE_USER_RX  0x1020D006
+#endif
+#ifndef SCE_KERNEL_MEMBLOCK_TYPE_USER_RW
+#define SCE_KERNEL_MEMBLOCK_TYPE_USER_RW  0x2020D006
+#endif
+
 #define LOAD_ADDRESS 0x98000000
 
-extern so_module so_mod;      // el módulo principal (ya existe)
-so_module so_mod_aux;         // nuevo: módulo auxiliar (libStormGLOFT.so)
+// Definiciones GLOBALES de los módulos (sin extern)
+so_module so_mod;
+so_module so_mod_aux;
 
 void __kuser_memory_barrier(void) {
     asm("dmb\n");
@@ -91,7 +94,7 @@ void soloader_init_all() {
     const char * ver_02 = "v0.2";
     const char * ver_03 = "v0.3";
 
-    char * currently_installed_version = NULL;
+    const char *currently_installed_version = NULL;
 
     if      (strcmp(kubridge_hash, "E033D76A90C9B8F2D496735C2692AFD8C3ED32FE") == 0) // v0.1 (TheFloW)
     {
@@ -200,8 +203,6 @@ void soloader_init_all() {
     gl_init();
     l_success("OpenGL initialized.");
 
-    so_module so_mod;
-    so_module so_mod_aux;
 
     if (trophies_init() < 0) {
         warning("This game features unlockable trophies but NoTrpDrm is not installed. If you want to be able to unlock trophies, please install it.");

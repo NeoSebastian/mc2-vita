@@ -76,7 +76,7 @@ add_executable(${CMAKE_PROJECT_NAME}
                source/java.c
                source/patch.c
                source/reimpl/bits/_ctype.c
-               source/reimpl/egl.c
+               ##source/reimpl/egl.c
                source/reimpl/errno.c
                source/reimpl/io.c
                source/reimpl/log.c
@@ -98,6 +98,7 @@ add_executable(${CMAKE_PROJECT_NAME}
                lib/pthread-svelte/source/once.c
                lib/pthread-svelte/source/rwlock.c
                lib/falso_jni/FalsoJNI.c
+               lib/falso_jni/ConvertUTF.c
                lib/falso_jni/FalsoJNI_ImplBridge.c
                lib/falso_jni/FalsoJNI_Logger.c
                lib/sha1/sha1.c
@@ -168,7 +169,7 @@ vita_create_vpk(${VITA_VPKNAME}.vpk ${VITA_TITLEID} eboot.bin
                 ${CMAKE_SOURCE_DIR}/extras/livearea/bg0.png sce_sys/livearea/contents/bg0.png
                 ${CMAKE_SOURCE_DIR}/extras/livearea/template.xml sce_sys/livearea/contents/template.xml
                 ${CMAKE_SOURCE_DIR}/extras/trophies/TROPHY.TRP sce_sys/trophy/${VITA_TITLEID}_00/TROPHY.TRP
-                ${CMAKE_SOURCE_DIR}/shaders/gxp gxp
+                ##${CMAKE_SOURCE_DIR}/shaders/gxp gxp
                 )
 
 add_custom_target(send

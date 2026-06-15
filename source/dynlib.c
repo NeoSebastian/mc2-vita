@@ -1063,7 +1063,7 @@ so_default_dynlib default_dynlib[] = {
 
         // Temp
         { "mkstemp", (uintptr_t)&mkstemp },
-        { "mktemp", (uintptr_t)&mktemp },
+        //{ "mktemp", (uintptr_t)&mktemp },
         { "tmpfile", (uintptr_t)&tmpfile },
         { "tmpnam", (uintptr_t)&tmpnam },
 
