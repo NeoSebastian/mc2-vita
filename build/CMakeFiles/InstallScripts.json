@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/neo/Descargas/VitaProjects/VitaPorts/mc2-vita/build/cmake_install.cmake",
+		"/home/neo/Descargas/VitaProjects/VitaPorts/mc2-vita/build/lib/libc_bridge/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

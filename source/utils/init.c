@@ -34,7 +34,9 @@
 #define SCE_KERNEL_MEMBLOCK_TYPE_USER_RW  0x2020D006
 #endif
 
-#define LOAD_ADDRESS 0x98000000
+//#define LOAD_ADDRESS 0x81000000
+#define LOAD_ADDRESS_AUX  0xA0000000
+#define LOAD_ADDRESS_MAIN 0xA1000000
 
 // Definiciones GLOBALES de los módulos (sin extern)
 so_module so_mod;
@@ -134,14 +136,14 @@ void soloader_init_all() {
     }
 
     // Cargar primero la librería auxiliar (pequeña)
-    if (so_file_load(&so_mod_aux, SO_PATH_AUX, LOAD_ADDRESS) < 0) {
+    if (so_file_load(&so_mod_aux, SO_PATH_AUX, LOAD_ADDRESS_AUX) < 0) {
         l_fatal("Aux SO could not be loaded.");
         fatal_error("Error loading %s", SO_PATH_AUX);
     }
     l_success("Aux SO loaded: %s", SO_PATH_AUX);
 
     // Luego cargar la librería principal
-    if (so_file_load(&so_mod, SO_PATH_MAIN, LOAD_ADDRESS) < 0) {
+    if (so_file_load(&so_mod, SO_PATH_MAIN, LOAD_ADDRESS_MAIN) < 0) {
         l_fatal("Main SO could not be loaded.");
         fatal_error("Error loading %s", SO_PATH_MAIN);
     }

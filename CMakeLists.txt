@@ -12,7 +12,7 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 # Vita application configuration
 set(VITA_APP_NAME "MC2: Black Pegasus")
-set(VITA_TITLEID "MOCO200000")
+set(VITA_TITLEID "MOCO200001")
 set(VITA_VPKNAME "ModernCombat2")
 set(VITA_VERSION "01.00")
 set(VITA_MKSFOEX_FLAGS "-d ATTRIBUTE2=12")
