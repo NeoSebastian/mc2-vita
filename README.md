@@ -1,226 +1,219 @@
-<h1 align="center">
-<img align="center" src="extras/screenshots/banner.png" width="50%"><br>
-Modern Combat 2 · PSVita Port
-</h1>
 <p align="center">
-  <a href="#setup-instructions-for-players">How to install</a> •
-  <a href="#controls">Controls</a> •
-  <a href="#known-issues">Known Issues</a> •
-  <a href="#build-instructions-for-developers">How to compile</a> •
-  <a href="#credits">Credits</a> •
-  <a href="#license">License</a>
+  <img src="assets/PSVita_Screen.png" alt="Modern Combat 2: Black Pegasus - PS Vita Port">
 </p>
 
-Modern Combat 2: Black Pegasus is a 2010 first-person shooter developed and
-published by Gameloft Montreal for mobile platforms. As the second installment
-in the Modern Combat series, the game follows a special operations unit engaged
-in global counter-terrorism missions across a variety of combat environments.
+# MC2BPegasus-Vita
 
-This repository contains a loader for **the Android release of Modern Combat 2:
-Black Pegasus v1.0.5**, the latest Android version available. Based on the
-[Android SO Loader by TheFloW][gtasa], the loader provides a lightweight
-Android-like runtime environment that enables the original ARMv7 game binary
-to run natively on the PlayStation Vita.
+Unofficial wrapper/port of **Modern Combat 2: Black Pegasus** for PlayStation Vita.
 
-Disclaimer
-----------------
- 
-**Modern Combat 2: Black Pegasus** is copyright © 2010 Gameloft. All rights
-reserved. Gameloft and the Gameloft logo are trademarks of Gameloft in the
-U.S. and/or other countries.
+The port operates by loading the official Android ARMv7 executable directly into memory, linking its dependencies to native functions, providing the JNI environment expected by the game, and translating OpenGL ES calls through vitaGL. In practice, this creates a lightweight Android-like environment where the original executable can run natively on the PS Vita.
 
-The work presented in this repository is not "official" and is not produced,
-endorsed, or sanctioned by the owner(s) of the aforementioned trademark(s) or
-any other registered trademark mentioned in this repository.
+> Port by **MeninoSung**
 
-This software does not contain the original game code, executables, assets, or
-any other non-redistributable components of the original product. The authors
-of this project do not promote or condone piracy in any form. To launch and
-play the game on a PS Vita system, users must own and provide their own legally
-obtained copy of Modern Combat 2: Black Pegasus v1.0.5 in the form of an
-Android APK file.
+## About the port
 
-Setup Instructions (For Players)
-----------------
+This project uses an Android shared-object loader and FalsoJNI to run the original `libsandstorm2.so` library on the PS Vita. The graphics layer is implemented with [VitaGL](https://github.com/Rinnegatamante/vitaGL), while platform-specific replacements provide input, audio, filesystem, lifecycle, and media functionality expected by the Android version.
 
-In order to properly install the game, you'll have to follow these steps
-precisely:
+The target game build uses the Gameloft package namespace `com.gameloft.android.GAND.GloftBPHP.ML`, the Xperia Play device profile, and game data stored under `GloftBPHP/data/`. The loader reproduces the JNI initialization sequence used by that build instead of relying on a generic `android_main` entry point.
 
-- (Recommended) Make sure that you are either on 3.60 enso or 3.65 enso firmware
-  version. Other versions may work too, but no support are provided for them! If
-  you experience any issues apart from described in the
-  <a href="#known-issues">Known Issues</a> section, please upgrade or downgrade
-  your firmware accordingly before asking for support.
+_This port does not distribute the game's commercial data. Users must provide their own legally obtained, compatible Android copy and extract the required files themselves._
 
-- Install or update [kubridge][kubridge] and [FdFix][fdfix] by copying
-  `kubridge.skprx` and `fd_fix.skprx` to your taiHEN plugins folder
-  (usually `ur0:tai`) and adding two entries to your `config.txt` under `*KERNEL`:
+## Setup Instructions (For End Users)
 
-```
-  *KERNEL
-  ur0:tai/kubridge.skprx
-  ur0:tai/fd_fix.skprx
+In order to properly install the game, follow these steps precisely:
+
+- Install [kubridge](https://github.com/TheOfficialFloW/kubridge/releases/) and [FdFix](https://github.com/TheOfficialFloW/FdFix/releases/) by copying `kubridge.skprx` and `fd_fix.skprx` to your taiHEN plugins folder (usually `ur0:tai`) and adding the following entries to `config.txt` under `*KERNEL`:
+
+```text
+*KERNEL
+ur0:tai/kubridge.skprx
+ur0:tai/fd_fix.skprx
 ```
 
-```diff
-! ⚠️ Don't install `fd_fix.skprx` if you're using the rePatch plugin!
+**Note:** Do not install `fd_fix.skprx` if you are using the rePatch plugin.
+
+- **Optional:** Install [PSVshell](https://github.com/Electry/PSVshell/releases/) if you want to monitor performance. Overclocking is not required: the port runs at a stable 60 FPS at the PS Vita's standard 333 MHz CPU clock.
+- Install `libshacccg.suprx`, if you do not already have it, by following [this guide](https://samilops2.gitbook.io/vita-troubleshooting-guide/shader-compiler/extract-libshacccg.suprx).
+- Obtain a legal copy of **Modern Combat 2: Black Pegasus version 1.0.0** for Android ARMv7.
+- Do not combine `libsandstorm2.so` and data files from different releases.
+
+### Supported Android Build
+
+| Property | Value |
+|---|---|
+| Game | Modern Combat 2: Black Pegasus |
+| Version | 1.0.0 |
+| Architecture | ARMv7 |
+| Native library | `libsandstorm2.so` |
+| Package namespace | `com.gameloft.android.GAND.GloftBPHP.ML` |
+| Data profile | Xperia Play / `GloftBPHP` |
+
+_Only data extracted from version 1.0.0 is supported. Files from other versions may use incompatible native code, resources, or data layouts._
+
+### How to Prepare the Game Files
+
+1. Extract your legally obtained Android game package and game data for version **1.0.0**.
+2. Locate `libsandstorm2.so` in the APK's ARMv7 library folder.
+3. Locate the matching `GloftBPHP/data` directory.
+4. Create a folder named `moderncombat2` with the following structure:
+
+   ```text
+   Moderncombat2/
+   |-- libsandstorm2.so
+   |-- files/
+   `-- GloftBPHP/
+       |-- CheckPoint.bin
+       |-- SaveGame.bin
+       `-- data/
+           |-- Constants.bin
+           |-- 2d.header
+           |-- 2d.pak
+           |-- 3d.header
+           |-- 3d.pak
+           |-- automat.header
+           |-- automat.pak
+           |-- structs.header
+           |-- structs.pak
+           |-- texts.header
+           |-- texts.pak
+           |-- audio/
+           `-- intro/
+               `-- logo.mp4
+   ```
+
+5. Keep all files from the same version 1.0.0 release together. Do not replace individual files with data from another version.
+
+### Installation on PS Vita
+
+1. Install `MC2BPegasus-Vita.vpk` on your PS Vita using VitaShell.
+2. Copy the prepared `moderncombat2` folder to `ux0:data/`.
+3. Verify that the files are located at these paths:
+
+   ```text
+   ux0:data/moderncombat2/libsandstorm2.so
+   ux0:data/moderncombat2/GloftBPHP/data/
+   ```
+
+4. Launch **PegasusVita** from the LiveArea.
+
+If startup fails, check `ux0:data/moderncombat2/port.log`. The loader also creates `ux0:data/mc2_boot.log` when the application reaches its main entry point.
+
+### Language
+
+The supported languages are:
+
+- English
+- French
+- German
+- Italian
+- Spanish
+- Japanese
+
+For the best compatibility, set the game to English after the first launch:
+
+```text
+Options > Languages > English
 ```
 
-```diff
-- ⚠️ Even if you had `kubridge.skprx` installed before, most likely you still
-- need to update it, since a new version of the plugin was released at the same
-- time as this port. kubridge v0.3.1 or newer is required to run the game!
-```
+## Controls
 
-- Make sure you have `libshacccg.suprx` in the `ur0:/data/` folder on your
-  console. If you don't, use [ShaRKBR33D][shrkbrd] to get it quickly and easily.
+The port supports the front touchscreen, both analog sticks, and the physical PS Vita controls. The physical buttons are exposed to the game using its original Xperia Play mappings.
 
-- <u>Legally</u> obtain your copy of Modern Combat 2 for Android in a form
-  of an `.apk` file and data files. This port is tailored for v1.0.5 (latest)
-  version of the game. Other versions may work too but no support is provided
-  for them.
+<div align="center">
+  <table>
+    <thead>
+      <tr>
+        <th align="center">Control</th>
+        <th align="center">Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td align="center">Left analog stick</td><td align="center">Movement</td></tr>
+      <tr><td align="center">Right analog stick</td><td align="center">Camera / aiming</td></tr>
+      <tr><td align="center">D-pad</td><td align="center">Android D-pad directions</td></tr>
+      <tr><td align="center">Cross</td><td align="center">D-pad center / confirm</td></tr>
+      <tr><td align="center">Circle</td><td align="center">Back</td></tr>
+      <tr><td align="center">Square</td><td align="center">Xperia Play X button</td></tr>
+      <tr><td align="center">Triangle</td><td align="center">Xperia Play Y button</td></tr>
+      <tr><td align="center">L / R</td><td align="center">Xperia Play L1 / R1</td></tr>
+      <tr><td align="center">START / SELECT</td><td align="center">Start / Select</td></tr>
+      <tr><td align="center">Front touchscreen</td><td align="center">Menus, touch controls, and on-screen interactions</td></tr>
+    </tbody>
+  </table>
+</div>
 
-    - If you have it installed on your phone, you can
-      [get all the required files directly from it][unpack-on-phone]
-      or by using any APK extractor you can find on Google Play.
+_The exact in-game action of each Xperia Play button can vary by screen and control configuration._
 
-> ℹ️ Verify that your build is the correct one using **sha1sum** (can also
-> be found as an online tool). sha1sum for `lib/armeabi-v7a/libModernCombat3.so`
-> **must** be `be0d5e8779899e081a538b3930ec711d2df8aeb4`
+## Screenshots
 
-- Open the `.apk` with any zip explorer (like [7-Zip](https://www.7-zip.org/))
-  and extract the file `lib/armeabi-v7a/libModernCombat3.so` from the `.apk`
-  into `ux0:data/mc3/` on your Vita. Example of correct resulting path:
-  `ux0:data/mc3/libModernCombat3.so`
+<p align="center">
+  <img src="assets/prints/1.png" width="48%" alt="Modern Combat 2 gameplay screenshot 1">
+  <img src="assets/prints/2.png" width="48%" alt="Modern Combat 2 gameplay screenshot 2">
+  <img src="assets/prints/3.png" width="48%" alt="Modern Combat 2 gameplay screenshot 3">
+  <img src="assets/prints/4.png" width="48%" alt="Modern Combat 2 gameplay screenshot 4">
+  <img src="assets/prints/3-FPS.png" width="48%" alt="Modern Combat 2 running at 60 FPS on PS Vita">
+</p>
 
-- Fetch the game data files from your device. You can find them at
-  `/sdcard/Android/obb/com.gameloft.android.ANMP.GloftM3HM`. Copy both files you
-  find there (`patch.11428.com.gameloft.android.ANMP.GloftM3HM.obb` and
-  `main.1120.com.gameloft.android.ANMP.GloftM3HM.obb`) to `ux0:data/mc3/` on
-  your Vita. Example of correct resulting path: `ux0:data/mc3/main.1120.com.gameloft.android.ANMP.GloftM3HM.obb`
+The game runs at a stable **60 FPS** on standard PS Vita clocks, including the default **333 MHz CPU clock**. Overclocking is not required for normal gameplay.
 
-- Unpack the video files from the game data. To do that, open your
-  `patch.11428.com.gameloft.android.ANMP.GloftM3HM.obb` with any zip explorer
-  (like [7-Zip](https://www.7-zip.org/)) and extract all files to
-  `/ux0:/data/mc3/data/briefing` on your Vita. Example of correct resulting
-  path: `ux0:data/mc3/data/briefing/Briefing_M01.mp4`
+## Build Instructions (For Developers)
 
-- Install `ModernCombat3.vpk` (from [Releases][latest-release]).
+Requirements:
 
-- (Optional) Install [CapUnlocker](https://github.com/GrapheneCt/CapUnlocker).
-  It may give you a bit better performance.
+- [VitaSDK](https://vitasdk.org/) configured through the `VITASDK` environment variable;
+- an ARM `softfp` toolchain and compatible dependencies;
+- vitaGL, vitashark, FalsoJNI, OpenSLES, and the audio libraries referenced by `CMakeLists.txt`;
+- `kubridge.skprx` installed on the target Vita.
 
-- (Optional) For trophies to be unlockable, install [NoTrpDRM][notrpdrm].
-
-Controls
------------------
-
-|       Button        | Action                                                 |
-|:-------------------:|:-------------------------------------------------------|
-|      ![joysl]       | Move                                                   |
-|      ![joysr]       | Control camera                                         |
-|      ![trigl]       | Aim                                                    |
-|      ![trigr]       | Fire                                                   |
-|      ![dpadu]       | Sprint                                                 |
-|      ![dpadd]       | Crouch                                                 |
-|      ![dpadh]       | Change weapon                                          |
-|      ![circl]       | Grenades                                               |
-|      ![squar]       | Reload                                                 |
-|      ![start]       | Open Menu                                              |
-
-Known Issues
-----------------
-
-1. Multiplayer doesn't work, same as on Android, because the servers have been
-shut down.
-2. ![cross] button works only in main menu. For in-game interaction prompts and
-pause menu you will have to use the touchscreen.
-3. In Mission 7, crosshair is not showing when the sniper rifle is zoomed in.
-You will have to no-scope it :^)
-
-Build Instructions (For Developers)
-----------------
-
-In order to build the loader, you'll need a [vitasdk](https://github.com/vitasdk)
-build fully compiled with softfp usage. The easiest way to obtain one is
-following the instructions on https://vitasdk.org/ while replacing the URL in
-this command:
+### Compile
 
 ```bash
-git clone https://github.com/vitasdk/vdpm
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
-Like this:
+The current repository includes the distributable as `MC2BPegasus-Vita.vpk`. A local CMake build generates `Pegasus_Vita.vpk` with title ID `MC2V00001`. By default, the loader expects the game files at `ux0:data/moderncombat2/`. The path can be changed at configure time:
 
 ```bash
-git clone https://github.com/vitasdk-softfp/vdpm
+cmake -S . -B build \
+  -DDATA_PATH="ux0:data/moderncombat2/" \
+  -DGAME_SO_PATH="ux0:data/moderncombat2/libsandstorm2.so"
+cmake --build build
 ```
 
-All the required libraries should get installed automatically if you follow the
-installation process from https://vitasdk.org/.
-
-After all these requirements are met, you can compile the loader with the
-following commands:
+Debug builds enable additional loader diagnostics:
 
 ```bash
-cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Debug # Or =Release if you don't want debug logging
-cmake --build build -j$(nproc)
+cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-debug
 ```
 
-Also note that this CMakeLists has two "convenience targets". While developing,
-I highly recommend using them, like this:
+## Known Issues
 
-```bash
-cmake --build build --target send # Build, upload eboot.bin and run (requires vitacompanion)
-cmake --build build --target dump # Fetch latest coredump and parse
-```
+- Touch input still has some interaction bugs caused by conflicts with the virtual movement joystick.
+- Some textures, including weapons lying on the ground, are missing.
+- Files from Android releases other than version 1.0.0 are not supported.
+- Network services, purchases, and integrations tied to discontinued Android or Gameloft infrastructure are not supported.
 
-For more information and build options, read the [CMakeLists](CMakeLists.txt).
+## Legal Notice
 
-Credits
-----------------
+This is an unofficial, free, non-commercial port. **Modern Combat 2: Black Pegasus**, Modern Combat, Gameloft, and all related assets and trademarks belong to their respective developers and copyright holders.
 
-- [Andy "The FloW" Nguyen][flow] for the original .so loader.
-- [Rinnegatamante][rinne] for help with rendering issues, audio/video
-  playing issues, video player code, trophy support code.
-- [CatoTheYounger][cato] for quality assurance.
-- [Once13One][o13o] for LiveArea assets.
-- [GrapheneCt][graph] for CapUnlocker.
+This repository must not be used to distribute commercial APKs, native libraries, or game data. Use only files from a copy you obtained legally and support the original developers.
 
-License
-----------------
+## Credits
 
-This software may be modified and distributed under the terms of
-the MIT license. See the [LICENSE](LICENSE) file for details.
+The loader code is derived from work by Volodymyr Atamanenko and the wider PS Vita Android-porting community. FalsoJNI is distributed in `lib/falso_jni` under its own license. Rights to Modern Combat 2 and its assets belong to their respective owners.
 
-[cross]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/cross.svg "Cross"
-[circl]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/circle.svg "Circle"
-[squar]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/square.svg "Square"
-[trian]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/triangle.svg "Triangle"
-[joysl]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/joystick-left.svg "Left Joystick"
-[joysr]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/joystick-right.svg "Left Joystick"
-[dpadh]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/dpad-left-right.svg "D-Pad Left/Right"
-[dpadv]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/dpad-top-down.svg "D-Pad Up/Down"
-[dpadu]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/dpad-up.svg "D-Pad Up"
-[dpadd]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/dpad-down.svg "D-Pad Down"
-[dpadl]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/dpad-left.svg "D-Pad Left"
-[dpadr]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/dpad-right.svg "D-Pad Right"
-[selec]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/dpad-select.svg "Select"
-[start]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/dpad-start.svg "Start"
-[trigl]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/trigger-left.svg "Left Trigger"
-[trigr]: https://raw.githubusercontent.com/v-atamanenko/mc3-vita/master/extras/icons/trigger-right.svg "Right Trigger"
+- **Port by MeninoSung**
+- TheFloW for the original Android `.so` loading research and infrastructure.
+- Volodymyr Atamanenko (`v-atamanenko`) for the loader, FalsoJNI-related work, and Gameloft porting references.
+- Rinnegatamante for [VitaGL](https://github.com/Rinnegatamante/vitaGL).
+- VitaSDK contributors and the PS Vita homebrew community.
+- Original game by Gameloft and its respective rights holders.
 
-[gtasa]: https://github.com/TheOfficialFloW/gtasa_vita
-[kubridge]: https://github.com/bythos14/kubridge/releases/
-[fdfix]: https://github.com/TheOfficialFloW/FdFix/releases/
-[unpack-on-phone]: https://stackoverflow.com/questions/11012976/how-do-i-get-the-apk-of-an-installed-app-without-root-access
-[shrkbrd]: https://github.com/Rinnegatamante/ShaRKBR33D/releases/latest
-[latest-release]: https://github.com/v-atamanenko/mc3-vita/releases/latest
-[issue]: https://github.com/v-atamanenko/mc3-vita/issues/new
-[notrpdrm]: https://github.com/Rinnegatamante/NoTrpDrm
+---
 
-[flow]: https://github.com/TheOfficialFloW/
-[rinne]: https://github.com/Rinnegatamante/
-[graph]: https://github.com/GrapheneCt/
-[cato]: https://github.com/CatoTheYounger97/
-[o13o]: https://github.com/once13one/
+## AI Notice
+
+Artificial intelligence tools (Codex/ChatGPT) were used to assist with code analysis, compatibility investigation, documentation, and the iterative development process.

@@ -13,10 +13,24 @@
 #include <string.h>
 #include <stdlib.h>
 
-EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
+extern void port_trace(const char *format, ...);
+
+static EGLBoolean egl_runtime_initialized = EGL_FALSE;
+static EGLDisplay egl_current_display;
+static EGLSurface egl_current_draw;
+static EGLSurface egl_current_read;
+static EGLContext egl_current_context;
+
+EGLBoolean bbr_eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
     l_debug("eglInitialize(0x%x)", (int)dpy);
 
-    gl_init();
+    port_trace("EGL: eglInitialize display=%p initialized=%u", dpy,
+               egl_runtime_initialized);
+    if (!egl_runtime_initialized) {
+        gl_init();
+        egl_runtime_initialized = EGL_TRUE;
+        port_trace("EGL: VitaGL initialized");
+    }
 
     if (major) *major = 2;
     if (minor) *minor = 2;
@@ -24,8 +38,10 @@ EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
     return EGL_TRUE;
 }
 
-EGLBoolean eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attribute,
-                           EGLint *value) {
+EGLBoolean bbr_eglQueryContext(EGLDisplay dpy, EGLContext ctx,
+                               EGLint attribute, EGLint *value) {
+    port_trace("EGL: eglQueryContext display=%p ctx=%p attr=0x%x", dpy,
+               ctx, attribute);
     EGLBoolean ret = EGL_TRUE;
     switch (attribute) {
         case EGL_CONFIG_ID:
@@ -46,12 +62,14 @@ EGLBoolean eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attribute,
             break;
     }
 
+    port_trace("EGL: eglQueryContext attr=0x%x result=%u value=%d",
+               attribute, ret, value ? *value : -1);
     return ret;
 }
 
 
-EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface eglSurface,
-                           EGLint attribute, EGLint *value) {
+EGLBoolean bbr_eglQuerySurface(EGLDisplay dpy, EGLSurface eglSurface,
+                               EGLint attribute, EGLint *value) {
     EGLBoolean ret = EGL_TRUE;
     switch (attribute) {
         case EGL_CONFIG_ID:
@@ -115,8 +133,8 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface eglSurface,
 }
 
 
-EGLBoolean eglGetConfigAttrib(EGLDisplay display, EGLConfig config,
-                              EGLint attribute, EGLint * value) {
+EGLBoolean bbr_eglGetConfigAttrib(EGLDisplay display, EGLConfig config,
+                                  EGLint attribute, EGLint *value) {
     switch (attribute) {
         case EGL_ALPHA_SIZE: {
             *value = 8;
@@ -155,7 +173,7 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay display, EGLConfig config,
             break;
         }
         case EGL_CONFORMANT: {
-            *value = 0;
+            *value = EGL_OPENGL_ES2_BIT;
             break;
         }
         case EGL_DEPTH_SIZE: {
@@ -175,19 +193,19 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay display, EGLConfig config,
             break;
         }
         case EGL_MAX_PBUFFER_WIDTH: {
-            *value = 0;
+            *value = 960;
             break;
         }
         case EGL_MAX_PBUFFER_HEIGHT: {
-            *value = 0;
+            *value = 544;
             break;
         }
         case EGL_MAX_PBUFFER_PIXELS: {
-            *value = 0;
+            *value = 960 * 544;
             break;
         }
         case EGL_MAX_SWAP_INTERVAL: {
-            *value = 0;
+            *value = 1;
             break;
         }
         case EGL_MIN_SWAP_INTERVAL: {
@@ -227,7 +245,7 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay display, EGLConfig config,
             break;
         }
         case EGL_SURFACE_TYPE: {
-            *value = 0 | EGL_WINDOW_BIT;
+            *value = EGL_WINDOW_BIT | EGL_PBUFFER_BIT;
             break;
         }
         case EGL_TRANSPARENT_TYPE: {
@@ -253,14 +271,14 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay display, EGLConfig config,
     return EGL_TRUE;
 }
 
-EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
-                           EGLConfig *configs, EGLint config_size,
-                           EGLint *num_config) {
+EGLBoolean bbr_eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
+                               EGLConfig *configs, EGLint config_size,
+                               EGLint *num_config) {
     if (!num_config) {
         return EGL_BAD_PARAMETER;
     }
 
-    if (!configs) {
+    if (!configs || config_size <= 0) {
         *num_config = 1;
         return EGL_TRUE;
     }
@@ -271,43 +289,79 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
     return EGL_TRUE;
 }
 
-EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
-                            EGLContext share_context,
-                            const EGLint *attrib_list) {
-    // Just something that is a valid pointer which can be freed later
-    return strdup("ctx");
+EGLContext bbr_eglCreateContext(EGLDisplay dpy, EGLConfig config,
+                                EGLContext share_context,
+                                const EGLint *attrib_list) {
+    // VitaGL owns the real graphics context; the Android side only needs a
+    // stable opaque EGL handle whose identity survives eglMakeCurrent.
+    EGLContext context = strdup("ctx");
+    port_trace("EGL: eglCreateContext display=%p share=%p -> %p", dpy,
+               share_context, context);
+    return context;
 }
 
-EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
-                                  void * win, const EGLint *attrib_list) {
-    // Just something that is a valid pointer which can be freed later
-    return strdup("surface");
+EGLSurface bbr_eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
+                                      void *win,
+                                      const EGLint *attrib_list) {
+    EGLSurface surface = strdup("surface");
+    port_trace("EGL: eglCreateWindowSurface display=%p window=%p -> %p",
+               dpy, win, surface);
+    return surface;
 }
 
-EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read,
-                          EGLContext ctx) {
+EGLSurface bbr_eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config,
+                                       const EGLint *attrib_list) {
+    (void)dpy; (void)config; (void)attrib_list;
+    EGLSurface surface = strdup("pbuffer");
+    port_trace("EGL: eglCreatePbufferSurface display=%p -> %p", dpy,
+               surface);
+    return surface;
+}
+
+EGLBoolean bbr_eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
+                              EGLSurface read, EGLContext ctx) {
+    egl_current_display = dpy;
+    egl_current_draw = draw;
+    egl_current_read = read;
+    egl_current_context = ctx;
+    port_trace("EGL: eglMakeCurrent display=%p draw=%p read=%p ctx=%p",
+               dpy, draw, read, ctx);
     return EGL_TRUE;
 }
 
-EGLBoolean eglDestroyContext (EGLDisplay dpy, EGLContext ctx) {
+EGLBoolean bbr_eglDestroyContext(EGLDisplay dpy, EGLContext ctx) {
+    port_trace("EGL: eglDestroyContext display=%p ctx=%p", dpy, ctx);
+    if (egl_current_context == ctx)
+        egl_current_context = NULL;
     if (ctx) free(ctx);
     return EGL_TRUE;
 }
 
-EGLBoolean eglDestroySurface (EGLDisplay dpy, EGLSurface surface) {
+EGLBoolean bbr_eglDestroySurface(EGLDisplay dpy, EGLSurface surface) {
+    port_trace("EGL: eglDestroySurface display=%p surface=%p", dpy,
+               surface);
+    if (egl_current_draw == surface) egl_current_draw = NULL;
+    if (egl_current_read == surface) egl_current_read = NULL;
     if (surface) free(surface);
     return EGL_TRUE;
 }
 
-EGLBoolean eglTerminate(EGLDisplay dpy) {
+EGLBoolean bbr_eglTerminate(EGLDisplay dpy) {
+    port_trace("EGL: eglTerminate display=%p", dpy);
+    if (egl_current_display == dpy) {
+        egl_current_display = NULL;
+        egl_current_draw = NULL;
+        egl_current_read = NULL;
+        egl_current_context = NULL;
+    }
     return EGL_TRUE;
 }
 
-EGLContext eglGetCurrentContext (void) {
-    return strdup("ctx");
+EGLContext bbr_eglGetCurrentContext(void) {
+    return egl_current_context;
 }
 
-char const * eglQueryString(EGLDisplay display, EGLint name) {
+char const *bbr_eglQueryString(EGLDisplay display, EGLint name) {
     switch (name) {
     case EGL_CLIENT_APIS:
         return "OpenGL OpenGL_ES";
@@ -330,8 +384,8 @@ char const * eglQueryString(EGLDisplay display, EGLint name) {
     }
 }
 
-EGLBoolean eglGetConfigs(EGLDisplay display, EGLConfig * configs,
-                         EGLint config_size, EGLint * num_config) {
+EGLBoolean bbr_eglGetConfigs(EGLDisplay display, EGLConfig *configs,
+                             EGLint config_size, EGLint *num_config) {
     if (!num_config) {
         l_error("eglGetConfigs / EGL_BAD_PARAMETER");
         return EGL_FALSE;

@@ -6,37 +6,36 @@ endif ()
 
 set(CMAKE_TOOLCHAIN_FILE "$ENV{VITASDK}/share/vita.toolchain.cmake" CACHE PATH "Toolchain file")
 
-project(so_loader C CXX)
+project(modern_combat_2_vita C CXX)
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 # Vita application configuration
-set(VITA_APP_NAME "MC2: Black Pegasus")
-set(VITA_TITLEID "MOCO200001")
-set(VITA_VPKNAME "ModernCombat2")
-set(VITA_VERSION "01.00")
+set(VITA_APP_NAME "PegasusVita")
+set(VITA_TITLEID "MC2V00001")
+set(VITA_VPKNAME "Pegasus_Vita")
+set(VITA_VERSION "01.24")
 set(VITA_MKSFOEX_FLAGS "-d ATTRIBUTE2=12")
-set(VITA_MAKE_FSELF_FLAGS "${VITA_MAKE_FSELF_FLAGS} -a 0x2800000000000000")
-add_definitions(-DTITLE_ID="${VITA_TITLEID}")
 
 # Optional: used for "send" and "dump" targets
 set(PSVITAIP "192.168.0.198" CACHE STRING "PSVita IP (for FTP access)")
 set(PARSECOREPATH "$ENV{PARSECOREPATH}" CACHE STRING "vita-parse-core main.py")
 
 # Game-specific definitions
-set(DATA_PATH "ux0:data/mc2/" CACHE STRING "Path to data (with trailing /)")
-set(SO_PATH_MAIN "${DATA_PATH}libsandstorm2.so" CACHE STRING "Path to main .so")
-set(SO_PATH_AUX "${DATA_PATH}libStormGLOFT.so" CACHE STRING "Path to auxiliary .so")
-add_definitions(-DDATA_PATH="${DATA_PATH}"
-                -DSO_PATH_MAIN="${SO_PATH_MAIN}"
-                -DSO_PATH_AUX="${SO_PATH_AUX}")
+set(DATA_PATH "ux0:data/moderncombat2/" CACHE STRING "Path to data (with trailing /)")
+set(GAME_SO_PATH "${DATA_PATH}libsandstorm2.so" CACHE STRING "Path to the game .so")
+add_definitions(
+  -DDATA_PATH="${DATA_PATH}"
+  -DGAME_SO_PATH="${GAME_SO_PATH}"
+  -DMC2_TEXTURE_PROFILE=4
+)
 
 option(USE_SCELIBC_IO "Use SceLibcBridge for IO and some other std functions" ON)
 if (USE_SCELIBC_IO)
   add_definitions(-DUSE_SCELIBC_IO)
 endif()
 
-set(SHADER_FORMAT "GXP" CACHE STRING "Preferred shader format (one of 'GLSL', 'CG', 'GXP')")
+set(SHADER_FORMAT "GLSL" CACHE STRING "Preferred shader format (one of 'GLSL', 'CG', 'GXP')")
 if (${SHADER_FORMAT} STREQUAL "GLSL")
   add_definitions(-DUSE_GLSL_SHADERS)
 elseif (${SHADER_FORMAT} STREQUAL "CG")
@@ -61,14 +60,24 @@ endif()
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_definitions(-DDEBUG_SOLOADER)
   # Uncomment this for verbose FalsoJNI logging:
-  add_definitions(-DFALSOJNI_DEBUGLEVEL=1)
+  #add_definitions(-DFALSOJNI_DEBUGLEVEL=0)
+  # Uncomment this for OpenGL logging:
+  #add_definitions(-DDEBUG_OPENGL)
 endif()
 
 # makes sincos, sincosf, etc. visible
 add_definitions(-D_GNU_SOURCE -D__POSIX_VISIBLE=999999)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -O3 -g -ffast-math -mfloat-abi=softfp -Wno-deprecated")
-set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=gnu++20 -Wno-write-strings -Wno-psabi")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -mfloat-abi=softfp -std=gnu11 -Wno-deprecated")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-q -mfloat-abi=softfp -std=gnu++20 -Wno-write-strings -Wno-psabi")
+
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O1 -g3")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O1 -g3")
+else ()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -g0 -ffast-math")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -g0 -ffast-math")
+endif()
 
 add_executable(${CMAKE_PROJECT_NAME}
                source/main.c
@@ -76,11 +85,19 @@ add_executable(${CMAKE_PROJECT_NAME}
                source/java.c
                source/patch.c
                source/reimpl/bits/_ctype.c
-               ##source/reimpl/egl.c
+               source/reimpl/audio.c
+               source/reimpl/audio.h
+               source/reimpl/intro_video.c
+               source/reimpl/intro_video.h
+               source/reimpl/controls.c
+               source/reimpl/controls.h
+               source/reimpl/egl.c
+               source/reimpl/egl.h
                source/reimpl/errno.c
                source/reimpl/io.c
                source/reimpl/log.c
                source/reimpl/mem.c
+               source/reimpl/native_activity.c
                source/reimpl/pthr.c
                source/reimpl/sys.c
                source/reimpl/time64.c
@@ -89,23 +106,24 @@ add_executable(${CMAKE_PROJECT_NAME}
                source/utils/glutil.c
                source/utils/init.c
                source/utils/logger.c
-               source/utils/player.c
                source/utils/settings.c
-               source/utils/trophies.c
                source/utils/utils.c
-               lib/pthread-svelte/source/cond_user.c
-               lib/pthread-svelte/source/mutex_user.c
-               lib/pthread-svelte/source/once.c
-               lib/pthread-svelte/source/rwlock.c
                lib/falso_jni/FalsoJNI.c
-               lib/falso_jni/ConvertUTF.c
                lib/falso_jni/FalsoJNI_ImplBridge.c
                lib/falso_jni/FalsoJNI_Logger.c
+               lib/falso_jni/converter.c
                lib/sha1/sha1.c
                lib/fios/fios.c
                lib/so_util/so_util.c)
 
-add_subdirectory(lib/libc_bridge)
+set(LIBC_BRIDGE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/lib/libc_bridge")
+if (NOT EXISTS "${LIBC_BRIDGE_SOURCE_DIR}/CMakeLists.txt")
+  message(FATAL_ERROR
+    "Pacote incompleto: ${LIBC_BRIDGE_SOURCE_DIR}/CMakeLists.txt nao existe. "
+    "Extraia novamente o ZIP do Modern Combat 2 Vita em uma pasta vazia.")
+endif()
+add_subdirectory("${LIBC_BRIDGE_SOURCE_DIR}"
+                 "${CMAKE_CURRENT_BINARY_DIR}/lib/libc_bridge")
 add_dependencies(${CMAKE_PROJECT_NAME} SceLibcBridge)
 
 target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM
@@ -118,27 +136,28 @@ target_include_directories(${CMAKE_PROJECT_NAME}
 
 target_link_libraries(${CMAKE_PROJECT_NAME}
                       -Wl,--whole-archive pthread -Wl,--no-whole-archive
+                      OpenSLES
+                      sndfile
+                      mp3lame
+                      mpg123
+                      opus
+                      vorbis
+                      ogg
+                      vorbisenc
+                      vorbisfile
+                      FLAC
                       stdc++
                       vitaGL
                       vitashark
                       SceShaccCgExt
                       taihen_stub
                       SceShaccCg_stub
-                      zip
-                      bz2
-                      lzma
-                      zstd
-                      crypto
                       z
                       m
                       ScePgf_stub
                       mathneon
                       kubridge_stub
                       ${CMAKE_BINARY_DIR}/lib/libc_bridge/stubs/libSceLibcBridge_stub.a
-                      SceAvPlayer_stub
-                      SceRazorHud_stub
-                      SceRazorCapture_stub
-                      SceNpTrophy_stub
                       SceHid_stub
                       SceTouch_stub
                       SceMotion_stub
@@ -146,6 +165,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
                       SceAppUtil_stub
                       SceAudio_stub
                       SceAudioIn_stub
+                      SceAvPlayer_stub
                       SceCommonDialog_stub
                       SceDisplay_stub
                       SceKernelDmacMgr_stub
@@ -153,6 +173,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
                       SceCtrl_stub
                       SceGxm_stub
                       ScePower_stub
+                      SceSysmodule_stub
                       SceTouch_stub
                       SceVshBridge_stub
                       )
@@ -163,13 +184,12 @@ vita_create_vpk(${VITA_VPKNAME}.vpk ${VITA_TITLEID} eboot.bin
                 NAME ${VITA_APP_NAME}
                 FILE ${CMAKE_SOURCE_DIR}/extras/cpuinfo cpuinfo
                 ${CMAKE_SOURCE_DIR}/extras/meminfo meminfo
+                ${CMAKE_SOURCE_DIR}/extras/urandom urandom
                 ${CMAKE_SOURCE_DIR}/extras/livearea/icon0.png sce_sys/icon0.png
                 ${CMAKE_SOURCE_DIR}/extras/livearea/pic0.png sce_sys/pic0.png
-                ${CMAKE_SOURCE_DIR}/extras/livearea/razorsquad.png sce_sys/livearea/contents/razorsquad.png
+                ${CMAKE_SOURCE_DIR}/extras/livearea/startup.png sce_sys/livearea/contents/startup.png
                 ${CMAKE_SOURCE_DIR}/extras/livearea/bg0.png sce_sys/livearea/contents/bg0.png
                 ${CMAKE_SOURCE_DIR}/extras/livearea/template.xml sce_sys/livearea/contents/template.xml
-                ${CMAKE_SOURCE_DIR}/extras/trophies/TROPHY.TRP sce_sys/trophy/${VITA_TITLEID}_00/TROPHY.TRP
-                ##${CMAKE_SOURCE_DIR}/shaders/gxp gxp
                 )
 
 add_custom_target(send

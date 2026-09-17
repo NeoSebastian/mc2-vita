@@ -21,43 +21,47 @@
 extern "C" {
 #endif
 
-EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor);
+EGLBoolean bbr_eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor);
 
-EGLBoolean eglGetConfigAttrib(EGLDisplay display, EGLConfig config,
-                              EGLint attribute, EGLint *value);
+EGLBoolean bbr_eglGetConfigAttrib(EGLDisplay display, EGLConfig config,
+                                  EGLint attribute, EGLint *value);
 
-EGLBoolean eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attribute,
-                           EGLint *value);
+EGLBoolean bbr_eglQueryContext(EGLDisplay dpy, EGLContext ctx,
+                               EGLint attribute, EGLint *value);
 
-EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface eglSurface,
-                           EGLint attribute, EGLint *value);
+EGLBoolean bbr_eglQuerySurface(EGLDisplay dpy, EGLSurface eglSurface,
+                               EGLint attribute, EGLint *value);
 
-EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint * attrib_list,
-                           EGLConfig * configs, EGLint config_size,
-                           EGLint * num_config);
+EGLBoolean bbr_eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
+                               EGLConfig *configs, EGLint config_size,
+                               EGLint *num_config);
 
-EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
-                            EGLContext share_context,
-                            const EGLint * attrib_list);
+EGLContext bbr_eglCreateContext(EGLDisplay dpy, EGLConfig config,
+                                EGLContext share_context,
+                                const EGLint *attrib_list);
 
-EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config, void * win,
-                                  const EGLint * attrib_list);
+EGLSurface bbr_eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
+                                      void *win,
+                                      const EGLint *attrib_list);
 
-EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read,
-                          EGLContext ctx);
+EGLSurface bbr_eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config,
+                                       const EGLint *attrib_list);
 
-EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx);
+EGLBoolean bbr_eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
+                              EGLSurface read, EGLContext ctx);
 
-EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface);
+EGLBoolean bbr_eglDestroyContext(EGLDisplay dpy, EGLContext ctx);
 
-EGLBoolean eglTerminate(EGLDisplay dpy);
+EGLBoolean bbr_eglDestroySurface(EGLDisplay dpy, EGLSurface surface);
 
-EGLContext eglGetCurrentContext (void);
+EGLBoolean bbr_eglTerminate(EGLDisplay dpy);
 
-EGLBoolean eglGetConfigs(EGLDisplay display, EGLConfig * configs,
-                         EGLint config_size, EGLint * num_config);
+EGLContext bbr_eglGetCurrentContext(void);
 
-char const * eglQueryString(EGLDisplay display, EGLint name);
+EGLBoolean bbr_eglGetConfigs(EGLDisplay display, EGLConfig *configs,
+                             EGLint config_size, EGLint *num_config);
+
+char const *bbr_eglQueryString(EGLDisplay display, EGLint name);
 
 #define EGL_CONFIG_ID                     0x3028
 #define EGL_HEIGHT                        0x3056

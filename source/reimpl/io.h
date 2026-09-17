@@ -69,11 +69,23 @@ typedef struct __attribute__((__packed__)) dirent64_bionic {
 
 int open_soloader(const char * path, int oflag, ...);
 
+int access_soloader(const char * path, int mode);
+
 FILE * fopen_soloader(const char * filename, const char * mode);
 
 DIR *opendir_soloader(char *name);
 
 int stat_soloader(const char * path, stat64_bionic * buf);
+
+int lstat_soloader(const char * path, stat64_bionic * buf);
+
+int chdir_soloader(const char * path);
+
+int mkdir_soloader(const char * path, mode_t mode);
+
+int remove_soloader(const char * path);
+
+int rename_soloader(const char * old_path, const char * new_path);
 
 int fstat_soloader(int fd, stat64_bionic * buf);
 

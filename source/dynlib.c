@@ -2,6 +2,7 @@
  * Copyright (C) 2021      Andy Nguyen
  * Copyright (C) 2021      Rinnegatamante
  * Copyright (C) 2022-2024 Volodymyr Atamanenko
+ * Copyright (C) 2026      Ellie J Turner
  *
  * This software may be modified and distributed under the terms
  * of the MIT license. See the LICENSE file for details.
@@ -13,6 +14,7 @@
  */
 
 #include <psp2/kernel/clib.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -26,6 +28,7 @@
 #include <zlib.h>
 #include <locale.h>
 #include <poll.h>
+#include <time.h>
 
 #include <sys/stat.h>
 #include <sys/unistd.h>
@@ -38,10 +41,16 @@
 #include "utils/glutil.h"
 #include "utils/utils.h"
 #include "utils/logger.h"
+#include "reimpl/native_activity.h"
 
 #ifdef USE_SCELIBC_IO
 #include <libc_bridge/libc_bridge.h>
 #endif
+
+#include <SLES/OpenSLES.h>
+#include <SLES/OpenSLES_Android.h>
+#include <psp2/audioout.h>
+#include <pthread.h>
 
 #include "reimpl/errno.h"
 #include "reimpl/io.h"
@@ -53,9 +62,27 @@
 #include "reimpl/time64.h"
 #include "reimpl/asset_manager.h"
 
-#include "pthread-svelte/include/pthread_svelte.h"
-
 const unsigned int __page_size = PAGE_SIZE;
+
+/* Extra Android/GNU runtime objects imported by Sandstorm 2. */
+static uintptr_t mc2_dso_handle;
+static const unsigned char mc2_nothrow_object;
+
+static void *mc2_new_array_nothrow(size_t size, const void *nothrow_tag) {
+    (void)nothrow_tag;
+    return malloc(size);
+}
+
+static void mc2_clearerr(FILE *stream) {
+    /* Streams are supplied by SceLibcBridge in the default build.  Newlib's
+     * clearerr cannot safely inspect that private FILE layout. */
+    (void)stream;
+}
+
+static uint32_t mc2_inet_addr(const char *text) {
+    struct in_addr address;
+    return inet_aton(text, &address) ? address.s_addr : 0xffffffffu;
+}
 
 extern void * _ZNSt9exceptionD2Ev;
 extern void * _ZSt17__throw_bad_allocv;
@@ -125,174 +152,627 @@ extern const short *BIONIC_toupper_tab_;
 
 static FILE __sF_fake[3];
 
-void *dlsym_soloader(void * handle, const char * symbol) {
-    // Usage example:
-    // if (strcmp("AMotionEvent_getAxisValue", symbol) == 0)
-    //    return &AMotionEvent_getAxisValue;
+void *dlsym_soloader(void * handle, const char * symbol);
+extern void port_trace(const char *format, ...);
 
-    l_error("dlsym: Unknown symbol \"%s\".", symbol);
+static int bbr_setpriority(int which, int who, int priority) {
+    (void)which; (void)who; (void)priority;
+    return 0;
+}
+
+/* FMOD 1.08's Android Reverb3D wrapper occasionally validates a newly
+ * created reverb to the sentinel pointer 0x1 on Vita.  Its next attribute
+ * copy then writes through 0x4d and aborts the process.  Purple uses this
+ * object only for environmental reverb, so keep the rest of FMOD/FMOD Studio
+ * native and make these four optional object methods harmless. */
+static unsigned bbr_fmod_reverb_call_count;
+
+static void bbr_trace_fmod_reverb(const char *operation, void *self) {
+    const unsigned call = ++bbr_fmod_reverb_call_count;
+    if (call <= 16)
+        port_trace("FMOD Reverb3D bypass #%u operation=%s self=%p",
+                   call, operation, self);
+}
+
+static int bbr_fmod_reverb_set_3d_attributes(
+        void *self, const void *position, float minimum_distance,
+        float maximum_distance) {
+    (void)position;
+    (void)minimum_distance;
+    (void)maximum_distance;
+    bbr_trace_fmod_reverb("set3DAttributes", self);
+    return 0;
+}
+
+static int bbr_fmod_reverb_set_properties(void *self,
+                                           const void *properties) {
+    (void)properties;
+    bbr_trace_fmod_reverb("setProperties", self);
+    return 0;
+}
+
+static int bbr_fmod_reverb_set_active(void *self, int active) {
+    (void)active;
+    bbr_trace_fmod_reverb("setActive", self);
+    return 0;
+}
+
+static int bbr_fmod_reverb_release(void *self) {
+    bbr_trace_fmod_reverb("release", self);
+    return 0;
+}
+
+static const struct SLObjectItf_ *opensl_object_original_vtable;
+static struct SLObjectItf_ opensl_object_traced_vtable;
+static const struct SLEngineItf_ *opensl_engine_original_vtable;
+static struct SLEngineItf_ opensl_engine_traced_vtable;
+
+static SLresult opensl_android_config_set(
+        SLAndroidConfigurationItf self, const SLchar *config_key,
+        const void *config_value, SLuint32 value_size) {
+    (void)self;
+    (void)config_value;
+    port_trace("OpenSL AndroidConfiguration::Set key=%p size=%u (ignored)",
+               config_key, value_size);
+    return SL_RESULT_SUCCESS;
+}
+
+static SLresult opensl_android_config_get(
+        SLAndroidConfigurationItf self, const SLchar *config_key,
+        SLuint32 *value_size, void *config_value) {
+    (void)self;
+    port_trace("OpenSL AndroidConfiguration::Get key=%p", config_key);
+    if (!value_size)
+        return SL_RESULT_PARAMETER_INVALID;
+
+    if (config_value && *value_size >= sizeof(SLint32))
+        *(SLint32 *)config_value = 0;
+    *value_size = sizeof(SLint32);
+    return SL_RESULT_SUCCESS;
+}
+
+static const struct SLAndroidConfigurationItf_
+    opensl_android_config_vtable = {
+        opensl_android_config_set,
+        opensl_android_config_get,
+    };
+static const struct SLAndroidConfigurationItf_ * const
+    opensl_android_config_vtable_ptr = &opensl_android_config_vtable;
+
+static const struct SLPlayItf_ *opensl_play_original_vtable;
+static struct SLPlayItf_ opensl_play_traced_vtable;
+static const struct SLAndroidSimpleBufferQueueItf_
+    *opensl_queue_original_vtable;
+static struct SLAndroidSimpleBufferQueueItf_ opensl_queue_traced_vtable;
+static slAndroidSimpleBufferQueueCallback opensl_queue_client_callback;
+static void *opensl_queue_client_context;
+static SLAndroidSimpleBufferQueueItf opensl_queue_self;
+static uint32_t opensl_enqueue_count;
+static uint32_t opensl_callback_count;
+static uint32_t opensl_nonzero_count;
+
+static void opensl_queue_callback_traced(
+        SLAndroidSimpleBufferQueueItf caller, void *context);
+
+enum {
+    FMOD_PCM_RING_CAPACITY = 8,
+    FMOD_VITA_OUTPUT_MAX_FRAMES = 2048,
+};
+
+typedef struct {
+    void *data;
+    SLuint32 size;
+} fmod_pcm_block;
+
+static fmod_pcm_block fmod_pcm_ring[FMOD_PCM_RING_CAPACITY];
+static unsigned fmod_pcm_read;
+static unsigned fmod_pcm_write;
+static unsigned fmod_pcm_queued;
+static SLuint32 fmod_pcm_play_index;
+static uint32_t fmod_pcm_generation;
+static uint32_t fmod_pcm_source_rate = 24000;
+static int fmod_pcm_playing;
+static int fmod_pcm_thread_started;
+static pthread_t fmod_pcm_thread_handle;
+static pthread_mutex_t fmod_pcm_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fmod_pcm_cond = PTHREAD_COND_INITIALIZER;
+static int16_t fmod_vita_output[2][FMOD_VITA_OUTPUT_MAX_FRAMES * 2]
+    __attribute__((aligned(64)));
+
+static void fmod_pcm_clear_locked(void) {
+    while (fmod_pcm_queued) {
+        fmod_pcm_block *block = &fmod_pcm_ring[fmod_pcm_read];
+        free(block->data);
+        block->data = NULL;
+        block->size = 0;
+        fmod_pcm_read = (fmod_pcm_read + 1) % FMOD_PCM_RING_CAPACITY;
+        --fmod_pcm_queued;
+    }
+    fmod_pcm_read = 0;
+    fmod_pcm_write = 0;
+    ++fmod_pcm_generation;
+}
+
+static void *fmod_pcm_output_thread(void *unused) {
+    (void)unused;
+    int16_t previous_sample[2] = { 0, 0 };
+    uint32_t resampler_generation = UINT32_MAX;
+    bool previous_sample_valid = false;
+
+    /* Wait for FMOD's first real block so the Vita port length represents
+     * exactly the same amount of time at 48 kHz. */
+    pthread_mutex_lock(&fmod_pcm_mutex);
+    while (!fmod_pcm_playing || !fmod_pcm_queued)
+        pthread_cond_wait(&fmod_pcm_cond, &fmod_pcm_mutex);
+    unsigned initial_input_frames =
+        fmod_pcm_ring[fmod_pcm_read].size / (sizeof(int16_t) * 2);
+    uint32_t source_rate = fmod_pcm_source_rate
+        ? fmod_pcm_source_rate : 24000;
+    pthread_mutex_unlock(&fmod_pcm_mutex);
+
+    unsigned output_frames = (unsigned)(
+        ((uint64_t)initial_input_frames * 48000 + source_rate / 2) /
+        source_rate);
+    output_frames = (output_frames + 63) & ~63u;
+    if (output_frames < 64)
+        output_frames = 64;
+    if (output_frames > FMOD_VITA_OUTPUT_MAX_FRAMES)
+        output_frames = FMOD_VITA_OUTPUT_MAX_FRAMES;
+
+    int port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN,
+                                   output_frames, 48000,
+                                   SCE_AUDIO_OUT_MODE_STEREO);
+    port_trace("FMOD direct PCM: MAIN port=%d source_rate=%u input_frames=%u output_frames=%u rate=48000 double_buffer=1",
+               port, source_rate, initial_input_frames, output_frames);
+    if (port < 0)
+        return NULL;
+
+    unsigned output_buffer_index = 0;
+    for (;;) {
+        pthread_mutex_lock(&fmod_pcm_mutex);
+        while (!fmod_pcm_playing || !fmod_pcm_queued)
+            pthread_cond_wait(&fmod_pcm_cond, &fmod_pcm_mutex);
+
+        fmod_pcm_block block = fmod_pcm_ring[fmod_pcm_read];
+        fmod_pcm_ring[fmod_pcm_read].data = NULL;
+        fmod_pcm_ring[fmod_pcm_read].size = 0;
+        fmod_pcm_read = (fmod_pcm_read + 1) % FMOD_PCM_RING_CAPACITY;
+        --fmod_pcm_queued;
+        ++fmod_pcm_play_index;
+        uint32_t block_generation = fmod_pcm_generation;
+        pthread_cond_broadcast(&fmod_pcm_cond);
+        pthread_mutex_unlock(&fmod_pcm_mutex);
+
+        const int16_t *input = (const int16_t *)block.data;
+        unsigned input_frames = block.size / (sizeof(int16_t) * 2);
+        int16_t *vita_output = fmod_vita_output[output_buffer_index];
+        if (input && input_frames) {
+            /*
+             * FMOD normally supplies 512 stereo frames at 24 kHz.  Convert
+             * them to the Vita port's 1024 frames at 48 kHz with linear
+             * interpolation.  Keeping the last sample from the preceding
+             * block makes interpolation continuous across block boundaries
+             * and avoids the clicks and high-frequency images produced by
+             * nearest-neighbour sample duplication.
+             */
+            if (resampler_generation != block_generation) {
+                previous_sample_valid = false;
+                resampler_generation = block_generation;
+            }
+            if (!previous_sample_valid) {
+                previous_sample[0] = input[0];
+                previous_sample[1] = input[1];
+                previous_sample_valid = true;
+            }
+
+            if (input_frames == output_frames) {
+                memcpy(vita_output, input,
+                       output_frames * sizeof(int16_t) * 2);
+            } else {
+                for (unsigned i = 0; i < output_frames; ++i) {
+                    uint64_t scaled = (uint64_t)(i + 1) * input_frames;
+                    unsigned whole = (unsigned)(scaled / output_frames);
+                    unsigned fraction = (unsigned)(scaled % output_frames);
+                    unsigned weight_a = output_frames - fraction;
+
+                    for (unsigned channel = 0; channel < 2; ++channel) {
+                        int32_t sample_a;
+                        int32_t sample_b;
+                        if (whole == 0) {
+                            sample_a = previous_sample[channel];
+                            sample_b = input[channel];
+                        } else {
+                            unsigned index_a = whole - 1;
+                            unsigned index_b = whole < input_frames
+                                ? whole : input_frames - 1;
+                            sample_a = input[index_a * 2 + channel];
+                            sample_b = input[index_b * 2 + channel];
+                        }
+                        int32_t interpolated =
+                            (sample_a * (int32_t)weight_a +
+                             sample_b * (int32_t)fraction) /
+                            (int32_t)output_frames;
+                        vita_output[i * 2 + channel] =
+                            (int16_t)interpolated;
+                    }
+                }
+            }
+
+            previous_sample[0] = input[(input_frames - 1) * 2];
+            previous_sample[1] = input[(input_frames - 1) * 2 + 1];
+        } else {
+            memset(vita_output, 0,
+                   output_frames * sizeof(int16_t) * 2);
+        }
+
+        int output_result = sceAudioOutOutput(port, vita_output);
+        output_buffer_index ^= 1;
+        free(block.data);
+        if (output_result < 0) {
+            port_trace("FMOD direct PCM: sceAudioOutOutput failed=0x%x",
+                       output_result);
+            break;
+        }
+
+        if (opensl_queue_client_callback)
+            opensl_queue_callback_traced(opensl_queue_self, NULL);
+    }
+
+    sceAudioOutReleasePort(port);
     return NULL;
 }
 
-float const_color[4];
-uint8_t is_constant_color = 0;
-void glBlendFunc_wrap(GLenum sfactor, GLenum dfactor) {
-    if (sfactor == 0x8001) {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        is_constant_color = 1;
+static void fmod_pcm_start_thread(void) {
+    pthread_mutex_lock(&fmod_pcm_mutex);
+    if (fmod_pcm_thread_started) {
+        pthread_mutex_unlock(&fmod_pcm_mutex);
+        return;
+    }
+    fmod_pcm_thread_started = 1;
+    pthread_mutex_unlock(&fmod_pcm_mutex);
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 128 * 1024);
+    int result = pthread_create(&fmod_pcm_thread_handle, &attr,
+                                fmod_pcm_output_thread, NULL);
+    pthread_attr_destroy(&attr);
+    if (result != 0) {
+        pthread_mutex_lock(&fmod_pcm_mutex);
+        fmod_pcm_thread_started = 0;
+        pthread_mutex_unlock(&fmod_pcm_mutex);
+        port_trace("FMOD direct PCM: pthread_create failed=%d", result);
+    }
+}
+
+static SLresult opensl_play_set_state_traced(SLPlayItf self,
+                                              SLuint32 play_state) {
+    SLresult result = opensl_play_original_vtable->SetPlayState(self,
+                                                                play_state);
+    pthread_mutex_lock(&fmod_pcm_mutex);
+    fmod_pcm_playing = play_state == SL_PLAYSTATE_PLAYING;
+    if (play_state == SL_PLAYSTATE_STOPPED)
+        fmod_pcm_clear_locked();
+    pthread_cond_broadcast(&fmod_pcm_cond);
+    pthread_mutex_unlock(&fmod_pcm_mutex);
+    if (play_state == SL_PLAYSTATE_PLAYING)
+        fmod_pcm_start_thread();
+    port_trace("OpenSL Play::SetPlayState state=%u result=%u", play_state,
+               result);
+    return result;
+}
+
+static SLresult opensl_queue_enqueue_traced(
+        SLAndroidSimpleBufferQueueItf self, const void *buffer,
+        SLuint32 size) {
+    uint32_t call = __atomic_fetch_add(&opensl_enqueue_count, 1,
+                                       __ATOMIC_RELAXED);
+    int peak = 0;
+    if (buffer) {
+        const int16_t *samples = (const int16_t *)buffer;
+        SLuint32 sample_count = size / sizeof(int16_t);
+        for (SLuint32 i = 0; i < sample_count; ++i) {
+            int value = samples[i];
+            if (value < 0)
+                value = -value;
+            if (value > peak)
+                peak = value;
+        }
+    }
+
+    SLresult result = SL_RESULT_SUCCESS;
+    void *copy = NULL;
+    if (!buffer || !size) {
+        result = SL_RESULT_PARAMETER_INVALID;
+    } else if (!(copy = malloc(size))) {
+        result = SL_RESULT_MEMORY_FAILURE;
     } else {
-        glBlendFunc(sfactor, dfactor);
-        is_constant_color = 0;
-    }
-}
-
-void glBlendColor_wrap(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
-    const_color[0] = red;
-    const_color[1] = green;
-    const_color[2] = blue;
-    const_color[3] = red;
-}
-
-extern GLuint cur_program; // Hack to access current program faster without glGetIntegerv usage
-extern GLboolean blend_state; // Hack to access curent blending state faster without glIsEnabled usage
-void glDrawArrays_wrap(GLenum mode, GLint first, GLsizei count) {
-    if (mode != GL_POINTS) {
-        if (is_constant_color && blend_state) {
-            GLint idx = glGetAttribLocation(cur_program, "Color0");
-            if (idx != -1) {
-                glDisableVertexAttribArray(idx);
-                glVertexAttrib4fv(idx, const_color);
-                glDrawArrays(mode, first, count);
-                glEnableVertexAttribArray(idx);
-            } else {
-                glDrawArrays(mode, first, count);
-            }
+        memcpy(copy, buffer, size);
+        pthread_mutex_lock(&fmod_pcm_mutex);
+        if (fmod_pcm_queued >= FMOD_PCM_RING_CAPACITY) {
+            result = SL_RESULT_BUFFER_INSUFFICIENT;
         } else {
-            glDrawArrays(mode, first, count);
+            fmod_pcm_ring[fmod_pcm_write].data = copy;
+            fmod_pcm_ring[fmod_pcm_write].size = size;
+            fmod_pcm_write = (fmod_pcm_write + 1) % FMOD_PCM_RING_CAPACITY;
+            ++fmod_pcm_queued;
+            copy = NULL;
+            pthread_cond_broadcast(&fmod_pcm_cond);
+        }
+        pthread_mutex_unlock(&fmod_pcm_mutex);
+        free(copy);
+    }
+    if (call < 12)
+        port_trace("FMOD direct Queue::Enqueue #%u size=%u peak=%d result=%u",
+                   call + 1, size, peak, result);
+    else if (peak > 0) {
+        uint32_t nonzero = __atomic_fetch_add(&opensl_nonzero_count, 1,
+                                              __ATOMIC_RELAXED);
+        if (nonzero < 16)
+            port_trace("FMOD direct nonzero #%u enqueue=%u peak=%d size=%u",
+                       nonzero + 1, call + 1, peak, size);
+    }
+    if (result != SL_RESULT_SUCCESS)
+        port_trace("FMOD direct Queue::Enqueue failure #%u result=%u",
+                   call + 1, result);
+    return result;
+}
+
+static SLresult opensl_queue_clear_traced(
+        SLAndroidSimpleBufferQueueItf self) {
+    (void)self;
+    pthread_mutex_lock(&fmod_pcm_mutex);
+    fmod_pcm_clear_locked();
+    pthread_cond_broadcast(&fmod_pcm_cond);
+    pthread_mutex_unlock(&fmod_pcm_mutex);
+    port_trace("FMOD direct Queue::Clear");
+    return SL_RESULT_SUCCESS;
+}
+
+static SLresult opensl_queue_get_state_traced(
+        SLAndroidSimpleBufferQueueItf self,
+        SLAndroidSimpleBufferQueueState *state) {
+    (void)self;
+    if (!state)
+        return SL_RESULT_PARAMETER_INVALID;
+    pthread_mutex_lock(&fmod_pcm_mutex);
+    state->count = fmod_pcm_queued;
+    state->index = fmod_pcm_play_index;
+    pthread_mutex_unlock(&fmod_pcm_mutex);
+    return SL_RESULT_SUCCESS;
+}
+
+static void opensl_queue_callback_traced(
+        SLAndroidSimpleBufferQueueItf caller, void *context) {
+    (void)context;
+    uint32_t call = __atomic_fetch_add(&opensl_callback_count, 1,
+                                       __ATOMIC_RELAXED);
+    if (call < 12)
+        port_trace("OpenSL Queue callback #%u caller=%p", call + 1, caller);
+    if (opensl_queue_client_callback)
+        opensl_queue_client_callback(caller, opensl_queue_client_context);
+}
+
+static SLresult opensl_queue_register_callback_traced(
+        SLAndroidSimpleBufferQueueItf self,
+        slAndroidSimpleBufferQueueCallback callback, void *context) {
+    opensl_queue_client_callback = callback;
+    opensl_queue_client_context = context;
+    opensl_queue_self = self;
+    SLresult result = SL_RESULT_SUCCESS;
+    port_trace("OpenSL Queue::RegisterCallback callback=%p context=%p result=%u",
+               callback, context, result);
+    return result;
+}
+
+static void trace_opensl_play(SLPlayItf play) {
+    if (!play || !*play || *play == &opensl_play_traced_vtable)
+        return;
+    if (!opensl_play_original_vtable) {
+        opensl_play_original_vtable = *play;
+        opensl_play_traced_vtable = **play;
+        opensl_play_traced_vtable.SetPlayState =
+            opensl_play_set_state_traced;
+    }
+    *(const struct SLPlayItf_ **)play = &opensl_play_traced_vtable;
+}
+
+static void trace_opensl_queue(SLAndroidSimpleBufferQueueItf queue) {
+    if (!queue || !*queue || *queue == &opensl_queue_traced_vtable)
+        return;
+    if (!opensl_queue_original_vtable) {
+        opensl_queue_original_vtable = *queue;
+        opensl_queue_traced_vtable = **queue;
+        opensl_queue_traced_vtable.Enqueue = opensl_queue_enqueue_traced;
+        opensl_queue_traced_vtable.Clear = opensl_queue_clear_traced;
+        opensl_queue_traced_vtable.GetState = opensl_queue_get_state_traced;
+        opensl_queue_traced_vtable.RegisterCallback =
+            opensl_queue_register_callback_traced;
+    }
+    *(const struct SLAndroidSimpleBufferQueueItf_ **)queue =
+        &opensl_queue_traced_vtable;
+}
+
+static void trace_opensl_object(SLObjectItf object);
+static void trace_opensl_engine(SLEngineItf engine);
+
+static SLresult opensl_object_realize_traced(SLObjectItf self,
+                                              SLboolean async) {
+    port_trace("OpenSL Object::Realize enter self=%p async=%u", self, async);
+    SLresult result = opensl_object_original_vtable->Realize(self, async);
+    port_trace("OpenSL Object::Realize leave self=%p result=%u", self, result);
+    return result;
+}
+
+static SLresult opensl_object_get_interface_traced(SLObjectItf self,
+                                                    const SLInterfaceID iid,
+                                                    void *interface_out) {
+    port_trace("OpenSL Object::GetInterface enter self=%p iid=%p", self, iid);
+
+    /*
+     * The Vita OpenSLES port intentionally omits AndroidConfiguration. FMOD
+     * only uses it to select an Android stream category, which has no Vita
+     * equivalent, so expose a successful no-op interface instead.
+     */
+    if (iid == SL_IID_ANDROIDCONFIGURATION && interface_out) {
+        *(SLAndroidConfigurationItf *)interface_out =
+            &opensl_android_config_vtable_ptr;
+        port_trace("OpenSL Object::GetInterface AndroidConfiguration shim out=%p",
+                   *(void **)interface_out);
+        return SL_RESULT_SUCCESS;
+    }
+
+    SLresult result = opensl_object_original_vtable->GetInterface(
+        self, iid, interface_out);
+    port_trace("OpenSL Object::GetInterface leave self=%p iid=%p result=%u out=%p",
+               self, iid, result,
+               interface_out ? *(void **)interface_out : NULL);
+
+    if (result == SL_RESULT_SUCCESS && iid == SL_IID_ENGINE && interface_out)
+        trace_opensl_engine(*(SLEngineItf *)interface_out);
+    else if (result == SL_RESULT_SUCCESS && iid == SL_IID_PLAY && interface_out)
+        trace_opensl_play(*(SLPlayItf *)interface_out);
+    else if (result == SL_RESULT_SUCCESS &&
+             iid == SL_IID_ANDROIDSIMPLEBUFFERQUEUE && interface_out)
+        trace_opensl_queue(*(SLAndroidSimpleBufferQueueItf *)interface_out);
+
+    return result;
+}
+
+static SLresult opensl_engine_create_output_mix_traced(
+        SLEngineItf self, SLObjectItf *mix, SLuint32 num_interfaces,
+        const SLInterfaceID *interface_ids,
+        const SLboolean *interface_required) {
+    port_trace("OpenSL Engine::CreateOutputMix enter self=%p interfaces=%u",
+               self, num_interfaces);
+    SLresult result = opensl_engine_original_vtable->CreateOutputMix(
+        self, mix, num_interfaces, interface_ids, interface_required);
+    port_trace("OpenSL Engine::CreateOutputMix leave result=%u mix=%p", result,
+               mix ? (void *)*mix : NULL);
+    if (result == SL_RESULT_SUCCESS && mix)
+        trace_opensl_object(*mix);
+    return result;
+}
+
+static SLresult opensl_engine_create_audio_player_traced(
+        SLEngineItf self, SLObjectItf *player, SLDataSource *audio_source,
+        SLDataSink *audio_sink, SLuint32 num_interfaces,
+        const SLInterfaceID *interface_ids,
+        const SLboolean *interface_required) {
+    port_trace("OpenSL Engine::CreateAudioPlayer enter self=%p interfaces=%u",
+               self, num_interfaces);
+
+    if (audio_source && audio_source->pFormat) {
+        const SLDataFormat_PCM *pcm =
+            (const SLDataFormat_PCM *)audio_source->pFormat;
+        if (pcm->formatType == SL_DATAFORMAT_PCM) {
+            if (pcm->samplesPerSec >= 1000)
+                fmod_pcm_source_rate = pcm->samplesPerSec / 1000;
+            port_trace("OpenSL player PCM channels=%u rate_mHz=%u bits=%u container=%u mask=0x%x",
+                       pcm->numChannels, pcm->samplesPerSec,
+                       pcm->bitsPerSample, pcm->containerSize,
+                       pcm->channelMask);
         }
     }
-}
 
-void glDrawElements_wrap(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices) {
-    if (mode != GL_POINTS) {
-        if (is_constant_color && blend_state) {
-            GLint idx = glGetAttribLocation(cur_program, "Color0");
-            if (idx != -1) {
-                glDisableVertexAttribArray(idx);
-                glVertexAttrib4fv(idx, const_color);
-                glDrawElements(mode, count, type, indices);
-                glEnableVertexAttribArray(idx);
-            } else {
-                glDrawElements(mode, count, type, indices);
+    /*
+     * AndroidConfiguration is compiled out of the Vita OpenSLES class table.
+     * Requiring it makes CreateAudioPlayer fail with FEATURE_UNSUPPORTED before
+     * the supported PCM buffer queue can be constructed. Filter that one IID;
+     * GetInterface serves the harmless shim above when FMOD configures it.
+     */
+    enum { OPENSL_MAX_PLAYER_INTERFACES = 16 };
+    SLInterfaceID filtered_ids[OPENSL_MAX_PLAYER_INTERFACES];
+    SLboolean filtered_required[OPENSL_MAX_PLAYER_INTERFACES];
+    SLuint32 filtered_count = 0;
+
+    if (num_interfaces <= OPENSL_MAX_PLAYER_INTERFACES) {
+        for (SLuint32 i = 0; i < num_interfaces; ++i) {
+            if (interface_ids[i] == SL_IID_ANDROIDCONFIGURATION) {
+                port_trace("OpenSL CreateAudioPlayer filtering AndroidConfiguration required=%u",
+                           interface_required ? interface_required[i] : 0);
+                continue;
             }
-        } else {
-            glDrawElements(mode, count, type, indices);
+            filtered_ids[filtered_count] = interface_ids[i];
+            filtered_required[filtered_count] =
+                interface_required ? interface_required[i] : SL_BOOLEAN_FALSE;
+            ++filtered_count;
         }
+    } else {
+        filtered_count = num_interfaces;
     }
+
+    SLresult result = opensl_engine_original_vtable->CreateAudioPlayer(
+        self, player, audio_source, audio_sink, filtered_count,
+        filtered_count <= OPENSL_MAX_PLAYER_INTERFACES ? filtered_ids
+                                                       : interface_ids,
+        filtered_count <= OPENSL_MAX_PLAYER_INTERFACES ? filtered_required
+                                                       : interface_required);
+    port_trace("OpenSL Engine::CreateAudioPlayer leave result=%u player=%p",
+               result, player ? (void *)*player : NULL);
+    if (result == SL_RESULT_SUCCESS && player)
+        trace_opensl_object(*player);
+    return result;
 }
 
-int32_t glGetUniformLocation_wrap(uint32_t prog, const char * name) {
-    if (strcmp(name, "texture") == 0)
-        return glGetUniformLocation(prog, "glitch_texture");
+static void trace_opensl_object(SLObjectItf object) {
+    if (!object || !*object || *object == &opensl_object_traced_vtable)
+        return;
 
-    return glGetUniformLocation(prog, name);
+    if (!opensl_object_original_vtable) {
+        opensl_object_original_vtable = *object;
+        opensl_object_traced_vtable = **object;
+        opensl_object_traced_vtable.Realize = opensl_object_realize_traced;
+        opensl_object_traced_vtable.GetInterface =
+            opensl_object_get_interface_traced;
+    }
+
+    *(const struct SLObjectItf_ **)object = &opensl_object_traced_vtable;
 }
 
-void glGetActiveUniform_wrap(GLuint prog, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size, GLenum *type, GLchar *name) {
-    glGetActiveUniform(prog, index, bufSize, length, size, type, name);
-    if (strcmp(name, "glitch_texture") == 0) {
-        strcpy(name, "texture");
-        if (length)
-            *length = 7;
+static void trace_opensl_engine(SLEngineItf engine) {
+    if (!engine || !*engine || *engine == &opensl_engine_traced_vtable)
+        return;
+
+    if (!opensl_engine_original_vtable) {
+        opensl_engine_original_vtable = *engine;
+        opensl_engine_traced_vtable = **engine;
+        opensl_engine_traced_vtable.CreateOutputMix =
+            opensl_engine_create_output_mix_traced;
+        opensl_engine_traced_vtable.CreateAudioPlayer =
+            opensl_engine_create_audio_player_traced;
     }
 
-    if (strcmp(name, "WorldViewProjectionMatrix") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matWorld") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matworldi") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matWorldIT") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matWorldViewIT") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matWorldView") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matWorldViewI") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "TextureMatrix0") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "TextureMatrix2") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matWorldT") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matViewI") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matviewi") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "matWorldI") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "WorldViewT") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "TextureMatrix") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
-    if (strcmp(name, "texturemat0") == 0) {
-        *type = GL_FLOAT_MAT4;
-        *size = 1;
-    }
+    *(const struct SLEngineItf_ **)engine = &opensl_engine_traced_vtable;
 }
 
+static SLresult slCreateEngine_traced(SLObjectItf *engine,
+                                      SLuint32 num_options,
+                                      const SLEngineOption *options,
+                                      SLuint32 num_interfaces,
+                                      const SLInterfaceID *interface_ids,
+                                      const SLboolean *interface_required) {
+    SLresult result = slCreateEngine(engine, num_options, options,
+                                     num_interfaces, interface_ids,
+                                     interface_required);
+    port_trace("slCreateEngine result=%u engine=%p", result,
+               engine ? (void *)*engine : NULL);
+    if (result == SL_RESULT_SUCCESS && engine)
+        trace_opensl_object(*engine);
+    return result;
+}
 
 so_default_dynlib default_dynlib[] = {
-        { "sinhf", (uintptr_t)&sinhf },
-        { "glVertexAttrib4fv", (uintptr_t)&glVertexAttrib4fv },
-        { "getpid", (uintptr_t)&getpid },
-        { "gmtime64", (uintptr_t)&gmtime64 },
-        { "mktime64", (uintptr_t)&mktime64 },
-        { "getpagesize", (uintptr_t)&getpagesize },
-        { "__android_log_assert", (uintptr_t)&__android_log_assert },
-        { "localtime64", (uintptr_t)&localtime64 },
-        { "AAssetManager_fromJava", (uintptr_t)&ret1 },
-        { "AAsset_read", (uintptr_t)&AAsset_read },
-        { "AAsset_close", (uintptr_t)&AAsset_close },
-        { "AAssetManager_open", (uintptr_t)&AAssetManager_open },
-        { "AAsset_seek", (uintptr_t)&AAsset_seek },
-        { "AAsset_getRemainingLength", (uintptr_t)&AAsset_getRemainingLength },
-        { "AAsset_getLength", (uintptr_t)&AAsset_getLength },
-        { "AAssetDir_close", (uintptr_t)&AAssetDir_close },
-        { "AAssetManager_openDir", (uintptr_t)&AAssetManager_openDir },
+        // BBR: bypass the broken optional FMOD Reverb3D object path.
+        { "_ZN4FMOD8Reverb3D15set3DAttributesEPK11FMOD_VECTORff", (uintptr_t)&bbr_fmod_reverb_set_3d_attributes },
+        { "_ZN4FMOD8Reverb3D13setPropertiesEPK22FMOD_REVERB_PROPERTIES", (uintptr_t)&bbr_fmod_reverb_set_properties },
+        { "_ZN4FMOD8Reverb3D9setActiveEb", (uintptr_t)&bbr_fmod_reverb_set_active },
+        { "_ZN4FMOD8Reverb3D7releaseEv", (uintptr_t)&bbr_fmod_reverb_release },
 
         // Common C/C++ internals
+        { "__dso_handle", (uintptr_t)&mc2_dso_handle },
+        { "_ZSt7nothrow", (uintptr_t)&mc2_nothrow_object },
+        { "_ZnajRKSt9nothrow_t", (uintptr_t)&mc2_new_array_nothrow },
         { "_ZNSt8bad_castD1Ev", (uintptr_t)&_ZNSt8bad_castD1Ev },
         { "_ZNSt9exceptionD2Ev", (uintptr_t)&_ZNSt9exceptionD2Ev },
         { "_ZSt17__throw_bad_allocv", (uintptr_t)&_ZSt17__throw_bad_allocv },
@@ -374,6 +854,8 @@ so_default_dynlib default_dynlib[] = {
         { "__stack_chk_guard", (uintptr_t)&__stack_chk_guard },
         { "__swbuf", (uintptr_t)&__swbuf },
         { "__system_property_get", (uintptr_t)&__system_property_get_soloader },
+        { "__assert2", (uintptr_t)&ret0 }, // TODO: stub/impl
+        { "dl_unwind_find_exidx", (uintptr_t)&ret0 }, // TODO: stub/impl
 
 
         // ctype
@@ -396,9 +878,61 @@ so_default_dynlib default_dynlib[] = {
 
 
         // Android SDK standard logging
+        { "__android_log_assert", (uintptr_t)&__android_log_assert },
         { "__android_log_print", (uintptr_t)&__android_log_print },
         { "__android_log_vprint", (uintptr_t)&__android_log_vprint },
         { "__android_log_write", (uintptr_t)&__android_log_write },
+
+
+        // AAssetManager
+        { "AAsset_close", (uintptr_t)&AAsset_close },
+        { "AAsset_getLength", (uintptr_t)&AAsset_getLength },
+        { "AAsset_getRemainingLength", (uintptr_t)&AAsset_getRemainingLength },
+        { "AAsset_read", (uintptr_t)&AAsset_read },
+        { "AAsset_seek", (uintptr_t)&AAsset_seek },
+        { "AAsset_openFileDescriptor", (uintptr_t)&AAsset_openFileDescriptor },
+        { "AAssetDir_close", (uintptr_t)&AAssetDir_close },
+        { "AAssetDir_getNextFileName", (uintptr_t)&AAssetDir_getNextFileName },
+        { "AAssetManager_fromJava", (uintptr_t)&AAssetManager_fromJava_soloader },
+        { "AAssetManager_open", (uintptr_t)&AAssetManager_open },
+        { "AAssetManager_openDir", (uintptr_t)&AAssetManager_openDir },
+
+
+        // Android NativeActivity, looper, input and sensor bridge
+        { "AConfiguration_delete", (uintptr_t)&AConfiguration_delete },
+        { "AConfiguration_fromAssetManager", (uintptr_t)&AConfiguration_fromAssetManager },
+        { "AConfiguration_getCountry", (uintptr_t)&AConfiguration_getCountry },
+        { "AConfiguration_getLanguage", (uintptr_t)&AConfiguration_getLanguage },
+        { "AConfiguration_new", (uintptr_t)&AConfiguration_new },
+        { "AInputEvent_getDeviceId", (uintptr_t)&AInputEvent_getDeviceId },
+        { "AInputEvent_getSource", (uintptr_t)&AInputEvent_getSource },
+        { "AInputEvent_getType", (uintptr_t)&AInputEvent_getType },
+        { "AInputQueue_attachLooper", (uintptr_t)&AInputQueue_attachLooper },
+        { "AInputQueue_detachLooper", (uintptr_t)&AInputQueue_detachLooper },
+        { "AInputQueue_finishEvent", (uintptr_t)&AInputQueue_finishEvent },
+        { "AInputQueue_getEvent", (uintptr_t)&AInputQueue_getEvent },
+        { "AInputQueue_preDispatchEvent", (uintptr_t)&AInputQueue_preDispatchEvent },
+        { "AKeyEvent_getAction", (uintptr_t)&AKeyEvent_getAction },
+        { "AKeyEvent_getKeyCode", (uintptr_t)&AKeyEvent_getKeyCode },
+        { "ALooper_addFd", (uintptr_t)&ALooper_addFd },
+        { "ALooper_pollAll", (uintptr_t)&ALooper_pollAll },
+        { "ALooper_prepare", (uintptr_t)&ALooper_prepare },
+        { "AMotionEvent_getAction", (uintptr_t)&AMotionEvent_getAction },
+        { "AMotionEvent_getAxisValue", (uintptr_t)&AMotionEvent_getAxisValue },
+        { "AMotionEvent_getPointerCount", (uintptr_t)&AMotionEvent_getPointerCount },
+        { "AMotionEvent_getPointerId", (uintptr_t)&AMotionEvent_getPointerId },
+        { "AMotionEvent_getX", (uintptr_t)&AMotionEvent_getX },
+        { "AMotionEvent_getY", (uintptr_t)&AMotionEvent_getY },
+        { "ANativeActivity_finish", (uintptr_t)&ANativeActivity_finish },
+        { "ANativeActivity_setWindowFlags", (uintptr_t)&ANativeActivity_setWindowFlags },
+        { "ANativeWindow_setBuffersGeometry", (uintptr_t)&ANativeWindow_setBuffersGeometry },
+        { "ASensorEventQueue_disableSensor", (uintptr_t)&ASensorEventQueue_disableSensor },
+        { "ASensorEventQueue_enableSensor", (uintptr_t)&ASensorEventQueue_enableSensor },
+        { "ASensorEventQueue_getEvents", (uintptr_t)&ASensorEventQueue_getEvents },
+        { "ASensorEventQueue_setEventRate", (uintptr_t)&ASensorEventQueue_setEventRate },
+        { "ASensorManager_createEventQueue", (uintptr_t)&ASensorManager_createEventQueue },
+        { "ASensorManager_getDefaultSensor", (uintptr_t)&ASensorManager_getDefaultSensor },
+        { "ASensorManager_getInstance", (uintptr_t)&ASensorManager_getInstance },
 
 
         // Math
@@ -420,6 +954,11 @@ so_default_dynlib default_dynlib[] = {
         { "expf", (uintptr_t)&expf },
         { "floor", (uintptr_t)&floor },
         { "floorf", (uintptr_t)&floorf },
+        { "fmax", (uintptr_t)&fmax },
+        { "fmaxf", (uintptr_t)&fmaxf },
+        { "fmin", (uintptr_t)&fmin },
+        { "fminf", (uintptr_t)&fminf },
+        { "frexpf", (uintptr_t)&frexpf },
         { "fmod", (uintptr_t)&fmod },
         { "fmodf", (uintptr_t)&fmodf },
         { "frexp", (uintptr_t)&frexp },
@@ -447,6 +986,7 @@ so_default_dynlib default_dynlib[] = {
         { "sincosf", (uintptr_t)&sincosf },
         { "sinf", (uintptr_t)&sinf },
         { "sinh", (uintptr_t)&sinh },
+        { "sinhf", (uintptr_t)&sinhf },
         { "sqrt", (uintptr_t)&sqrt },
         { "sqrtf", (uintptr_t)&sqrtf },
         { "tan", (uintptr_t)&tan },
@@ -461,6 +1001,7 @@ so_default_dynlib default_dynlib[] = {
         { "bind", (uintptr_t)&bind },
         { "connect", (uintptr_t)&connect },
         { "freeaddrinfo", (uintptr_t)&freeaddrinfo },
+        { "gai_strerror", (uintptr_t)&ret0 },
         { "getaddrinfo", (uintptr_t)&getaddrinfo },
         { "gethostbyaddr", (uintptr_t)&gethostbyaddr },
         { "gethostbyname", (uintptr_t)&gethostbyname },
@@ -470,6 +1011,8 @@ so_default_dynlib default_dynlib[] = {
         { "getsockname", (uintptr_t)&getsockname },
         { "getsockopt", (uintptr_t)&getsockopt },
         { "inet_aton", (uintptr_t)&inet_aton },
+        { "inet_addr", (uintptr_t)&mc2_inet_addr },
+        { "inet_pton", (uintptr_t)&inet_pton },
         { "inet_ntoa", (uintptr_t)&inet_ntoa },
         { "inet_ntop", (uintptr_t)&inet_ntop },
         { "listen", (uintptr_t)&listen },
@@ -478,6 +1021,7 @@ so_default_dynlib default_dynlib[] = {
         { "recvfrom", (uintptr_t)&recvfrom },
         { "recvmsg", (uintptr_t)&recvmsg },
         { "select", (uintptr_t)&select },
+        { "setpriority", (uintptr_t)&bbr_setpriority },
         { "send", (uintptr_t)&send },
         { "sendmsg", (uintptr_t)&sendmsg },
         { "sendto", (uintptr_t)&sendto },
@@ -497,6 +1041,7 @@ so_default_dynlib default_dynlib[] = {
         { "memmove", (uintptr_t)&memmove },
         { "memset", (uintptr_t)&memset },
         { "mmap", (uintptr_t)&mmap },
+        { "__mmap2", (uintptr_t)&mmap },
         { "munmap", (uintptr_t)&munmap },
         { "realloc", (uintptr_t)&realloc },
         { "valloc", (uintptr_t)&valloc },
@@ -507,11 +1052,13 @@ so_default_dynlib default_dynlib[] = {
         { "closedir", (uintptr_t)&closedir_soloader },
         { "execv", (uintptr_t)&ret0 },
         { "fclose", (uintptr_t)&fclose_soloader },
+        { "clearerr", (uintptr_t)&mc2_clearerr },
         { "fcntl", (uintptr_t)&fcntl_soloader },
         { "fopen", (uintptr_t)&fopen_soloader },
         { "fstat", (uintptr_t)&fstat_soloader },
         { "fsync", (uintptr_t)&fsync_soloader },
         { "ioctl", (uintptr_t)&ioctl_soloader },
+        { "__open_2", (uintptr_t)&open_soloader },
         { "open", (uintptr_t)&open_soloader },
         { "opendir", (uintptr_t)&opendir_soloader },
         { "readdir", (uintptr_t)&readdir_soloader },
@@ -575,9 +1122,9 @@ so_default_dynlib default_dynlib[] = {
             { "ungetwc", (uintptr_t)&ungetwc },
         #endif
 
-        { "access", (uintptr_t)&access },
+        { "access", (uintptr_t)&access_soloader },
         { "basename", (uintptr_t)&basename },
-        { "chdir", (uintptr_t)&chdir },
+        { "chdir", (uintptr_t)&chdir_soloader },
         { "chmod", (uintptr_t)&chmod },
         { "dup", (uintptr_t)&dup },
         { "fseeko", (uintptr_t)&fseeko }, // TODO: wrap normal fseek for SceLibc version?
@@ -585,13 +1132,14 @@ so_default_dynlib default_dynlib[] = {
         { "ftruncate", (uintptr_t)&ftruncate },
         { "getcwd", (uintptr_t)&getcwd },
         { "lseek", (uintptr_t)&lseek },
-        { "lstat", (uintptr_t)&lstat },
-        { "mkdir", (uintptr_t)&mkdir },
+        { "lseek64", (uintptr_t)&ret0 }, // TODO: implement or stub with warning
+        { "lstat", (uintptr_t)&lstat_soloader },
+        { "mkdir", (uintptr_t)&mkdir_soloader },
         { "pipe", (uintptr_t)&pipe },
         { "read", (uintptr_t)&read },
         { "realpath", (uintptr_t)&realpath },
-        { "remove", (uintptr_t)&remove },
-        { "rename", (uintptr_t)&rename },
+        { "remove", (uintptr_t)&remove_soloader },
+        { "rename", (uintptr_t)&rename_soloader },
         { "rewind", (uintptr_t)&rewind },
         { "rmdir", (uintptr_t)&rmdir },
         { "truncate", (uintptr_t)&truncate },
@@ -626,50 +1174,51 @@ so_default_dynlib default_dynlib[] = {
 
         // EGL
         { "eglBindAPI", (uintptr_t)&eglBindAPI },
-        { "eglChooseConfig", (uintptr_t)&eglChooseConfig },
-        { "eglCreateContext", (uintptr_t)&eglCreateContext },
-        { "eglCreateWindowSurface", (uintptr_t)&eglCreateWindowSurface },
-        { "eglDestroyContext", (uintptr_t)&eglDestroyContext },
-        { "eglDestroySurface", (uintptr_t)&eglDestroySurface },
-        { "eglGetConfigAttrib", (uintptr_t)&eglGetConfigAttrib },
-        { "eglGetConfigs", (uintptr_t)&eglGetConfigs },
-        { "eglGetCurrentContext", (uintptr_t)&eglGetCurrentContext },
+        { "eglChooseConfig", (uintptr_t)&bbr_eglChooseConfig },
+        { "eglCreateContext", (uintptr_t)&bbr_eglCreateContext },
+        { "eglCreatePbufferSurface", (uintptr_t)&bbr_eglCreatePbufferSurface },
+        { "eglCreateWindowSurface", (uintptr_t)&bbr_eglCreateWindowSurface },
+        { "eglDestroyContext", (uintptr_t)&bbr_eglDestroyContext },
+        { "eglDestroySurface", (uintptr_t)&bbr_eglDestroySurface },
+        { "eglGetConfigAttrib", (uintptr_t)&bbr_eglGetConfigAttrib },
+        { "eglGetConfigs", (uintptr_t)&bbr_eglGetConfigs },
+        { "eglGetCurrentContext", (uintptr_t)&bbr_eglGetCurrentContext },
         { "eglGetDisplay", (uintptr_t)&eglGetDisplay },
         { "eglGetError", (uintptr_t)&eglGetError },
         { "eglGetProcAddress", (uintptr_t)&eglGetProcAddress },
-        { "eglInitialize", (uintptr_t)&eglInitialize },
-        { "eglMakeCurrent", (uintptr_t)&eglMakeCurrent },
-        { "eglQueryContext", (uintptr_t)&eglQueryContext },
-        { "eglQueryString", (uintptr_t)&eglQueryString },
-        { "eglQuerySurface", (uintptr_t)&eglQuerySurface },
+        { "eglInitialize", (uintptr_t)&bbr_eglInitialize },
+        { "eglMakeCurrent", (uintptr_t)&bbr_eglMakeCurrent },
+        { "eglQueryContext", (uintptr_t)&bbr_eglQueryContext },
+        { "eglQueryString", (uintptr_t)&bbr_eglQueryString },
+        { "eglQuerySurface", (uintptr_t)&bbr_eglQuerySurface },
         { "eglSwapBuffers", (uintptr_t)&eglSwapBuffers },
-        { "eglTerminate", (uintptr_t)&eglTerminate },
+        { "eglTerminate", (uintptr_t)&bbr_eglTerminate },
 
 
         // OpenGL
         { "glActiveTexture", (uintptr_t)&glActiveTexture },
         { "glAlphaFunc", (uintptr_t)&glAlphaFunc },
         { "glAlphaFuncx", (uintptr_t)&glAlphaFuncx },
-        { "glAttachShader", (uintptr_t)&glAttachShader },
-        { "glBindAttribLocation", (uintptr_t)&glBindAttribLocation },
+        { "glAttachShader", (uintptr_t)&glAttachShader_soloader },
+        { "glBindAttribLocation", (uintptr_t)&glBindAttribLocation_soloader },
         { "glBindBuffer", (uintptr_t)&glBindBuffer },
         { "glBindFramebuffer", (uintptr_t)&glBindFramebuffer },
         { "glBindFramebufferOES", (uintptr_t)&glBindFramebuffer },
         { "glBindRenderbuffer", (uintptr_t)&glBindRenderbuffer },
         { "glBindRenderbufferOES", (uintptr_t)&glBindRenderbuffer },
         { "glBindTexture", (uintptr_t)&glBindTexture },
-        { "glBlendColor", (uintptr_t)&glBlendColor_wrap },
+        { "glBlendColor", (uintptr_t)&glBlendColor_soloader },
         { "glBlendEquation", (uintptr_t)&glBlendEquation },
         { "glBlendEquationOES", (uintptr_t)&glBlendEquation },
         { "glBlendEquationSeparate", (uintptr_t)&glBlendEquationSeparate },
         { "glBlendEquationSeparateOES", (uintptr_t)&glBlendEquationSeparate },
-        { "glBlendFunc", (uintptr_t)&glBlendFunc_wrap },
-        { "glBlendFuncSeparate", (uintptr_t)&glBlendFuncSeparate },
-        { "glBlendFuncSeparateOES", (uintptr_t)&glBlendFuncSeparate },
+        { "glBlendFunc", (uintptr_t)&glBlendFunc_soloader },
+        { "glBlendFuncSeparate", (uintptr_t)&glBlendFuncSeparate_soloader },
+        { "glBlendFuncSeparateOES", (uintptr_t)&glBlendFuncSeparate_soloader },
         { "glBufferData", (uintptr_t)&glBufferData },
         { "glBufferSubData", (uintptr_t)&glBufferSubData },
-        { "glCheckFramebufferStatus", (uintptr_t)&glCheckFramebufferStatus },
-        { "glCheckFramebufferStatusOES", (uintptr_t)&glCheckFramebufferStatus },
+        { "glCheckFramebufferStatus", (uintptr_t)&glCheckFramebufferStatus_soloader },
+        { "glCheckFramebufferStatusOES", (uintptr_t)&glCheckFramebufferStatus_soloader },
         { "glClear", (uintptr_t)&glClear },
         { "glClearColor", (uintptr_t)&glClearColor },
         { "glClearColorx", (uintptr_t)&glClearColorx },
@@ -685,21 +1234,23 @@ so_default_dynlib default_dynlib[] = {
         { "glColorMask", (uintptr_t)&glColorMask },
         { "glColorPointer", (uintptr_t)&glColorPointer },
         { "glCompileShader", (uintptr_t)&glCompileShader_soloader },
-        { "glCompressedTexImage2D", (uintptr_t)&glCompressedTexImage2D },
-        { "glCompressedTexSubImage2D", (uintptr_t)&ret0 },
+        { "glCompressedTexImage2D", (uintptr_t)&glCompressedTexImage2D_soloader },
+        { "glCompressedTexImage3DOES", (uintptr_t)&ret0 },
+        { "glCompressedTexSubImage2D", (uintptr_t)&glCompressedTexSubImage2D_soloader },
+        { "glCompressedTexSubImage3DOES", (uintptr_t)&ret0 },
         { "glCopyTexImage2D", (uintptr_t)&glCopyTexImage2D },
         { "glCopyTexSubImage2D", (uintptr_t)&glCopyTexSubImage2D },
-        { "glCreateProgram", (uintptr_t)&glCreateProgram },
-        { "glCreateShader", (uintptr_t)&glCreateShader },
+        { "glCreateProgram", (uintptr_t)&glCreateProgram_soloader },
+        { "glCreateShader", (uintptr_t)&glCreateShader_soloader },
         { "glCullFace", (uintptr_t)&glCullFace },
         { "glCurrentPaletteMatrixOES", (uintptr_t)&ret0 },
         { "glDeleteBuffers", (uintptr_t)&glDeleteBuffers },
         { "glDeleteFramebuffers", (uintptr_t)&glDeleteFramebuffers },
         { "glDeleteFramebuffersOES", (uintptr_t)&glDeleteFramebuffers },
-        { "glDeleteProgram", (uintptr_t)&glDeleteProgram },
+        { "glDeleteProgram", (uintptr_t)&glDeleteProgram_soloader },
         { "glDeleteRenderbuffers", (uintptr_t)&glDeleteRenderbuffers },
         { "glDeleteRenderbuffersOES", (uintptr_t)&glDeleteRenderbuffers },
-        { "glDeleteShader", (uintptr_t)&glDeleteShader },
+        { "glDeleteShader", (uintptr_t)&glDeleteShader_soloader },
         { "glDeleteTextures", (uintptr_t)&glDeleteTextures },
         { "glDepthFunc", (uintptr_t)&glDepthFunc },
         { "glDepthMask", (uintptr_t)&glDepthMask },
@@ -709,8 +1260,8 @@ so_default_dynlib default_dynlib[] = {
         { "glDisable", (uintptr_t)&glDisable },
         { "glDisableClientState", (uintptr_t)&glDisableClientState },
         { "glDisableVertexAttribArray", (uintptr_t)&glDisableVertexAttribArray },
-        { "glDrawArrays", (uintptr_t)&glDrawArrays_wrap },
-        { "glDrawElements", (uintptr_t)&glDrawElements_wrap },
+        { "glDrawArrays", (uintptr_t)&glDrawArrays },
+        { "glDrawElements", (uintptr_t)&glDrawElements },
         { "glDrawTexfOES", (uintptr_t)&ret0 },
         { "glDrawTexfvOES", (uintptr_t)&ret0 },
         { "glDrawTexiOES", (uintptr_t)&ret0 },
@@ -746,15 +1297,14 @@ so_default_dynlib default_dynlib[] = {
         { "glGenRenderbuffersOES", (uintptr_t)&glGenRenderbuffers },
         { "glGenTextures", (uintptr_t)&glGenTextures },
         { "glGetActiveAttrib", (uintptr_t)&glGetActiveAttrib },
-        { "glGetActiveUniform", (uintptr_t)&glGetActiveUniform_wrap },
+        { "glGetActiveUniform", (uintptr_t)&glGetActiveUniform },
         { "glGetAttribLocation", (uintptr_t)&glGetAttribLocation },
         { "glGetBooleanv", (uintptr_t)&glGetBooleanv },
         { "glGetBufferParameteriv", (uintptr_t)&glGetBufferParameteriv },
         { "glGetBufferPointervOES", (uintptr_t)&ret0 },
         { "glGetClipPlanef", (uintptr_t)&ret0 },
         { "glGetClipPlanex", (uintptr_t)&ret0 },
-        { "glGetClipPlanex", (uintptr_t)&ret0 },
-        { "glGetError", (uintptr_t)&glGetError },
+        { "glGetError", (uintptr_t)&glGetError_soloader },
         { "glGetFixedv", (uintptr_t)&ret0 },
         { "glGetFloatv", (uintptr_t)&glGetFloatv },
         { "glGetFramebufferAttachmentParameterivOES", (uintptr_t)&glGetFramebufferAttachmentParameteriv },
@@ -766,11 +1316,11 @@ so_default_dynlib default_dynlib[] = {
         { "glGetPointerv", (uintptr_t)&ret0 },
         { "glGetRenderbufferParameterivOES", (uintptr_t)&ret0 },
         { "glGetProgramInfoLog", (uintptr_t)&glGetProgramInfoLog },
-        { "glGetProgramiv", (uintptr_t)&glGetProgramiv },
+        { "glGetProgramiv", (uintptr_t)&glGetProgramiv_soloader },
         { "glGetShaderInfoLog", (uintptr_t)&glGetShaderInfoLog },
         { "glGetShaderSource", (uintptr_t)&glGetShaderSource },
         { "glGetShaderiv", (uintptr_t)&glGetShaderiv },
-        { "glGetString", (uintptr_t)&glGetString },
+        { "glGetString", (uintptr_t)&glGetString_soloader },
         { "glGetTexEnvfv", (uintptr_t)&ret0 },
         { "glGetTexEnviv", (uintptr_t)&glGetTexEnviv },
         { "glGetTexEnvxv", (uintptr_t)&ret0 },
@@ -780,9 +1330,10 @@ so_default_dynlib default_dynlib[] = {
         { "glGetTexParameterfv", (uintptr_t)&ret0 },
         { "glGetTexParameteriv", (uintptr_t)&ret0 },
         { "glGetTexParameterxv", (uintptr_t)&ret0 },
-        { "glGetUniformLocation", (uintptr_t)&glGetUniformLocation_wrap },
+        { "glGetUniformLocation", (uintptr_t)&glGetUniformLocation },
         { "glHint", (uintptr_t)&glHint },
         { "glIsBuffer", (uintptr_t)&ret0 },
+        { "glIsRenderbuffer", (uintptr_t)&glIsRenderbuffer },
         { "glIsEnabled", (uintptr_t)&glIsEnabled },
         { "glIsFramebufferOES", (uintptr_t)&glIsFramebuffer },
         { "glIsRenderbufferOES", (uintptr_t)&glIsRenderbuffer },
@@ -797,7 +1348,7 @@ so_default_dynlib default_dynlib[] = {
         { "glLightxv", (uintptr_t)&glLightxv },
         { "glLineWidth", (uintptr_t)&glLineWidth },
         { "glLineWidthx", (uintptr_t)&glLineWidthx },
-        { "glLinkProgram", (uintptr_t)&glLinkProgram },
+        { "glLinkProgram", (uintptr_t)&glLinkProgram_soloader },
         { "glLoadIdentity", (uintptr_t)&glLoadIdentity },
         { "glLoadMatrixf", (uintptr_t)&glLoadMatrixf },
         { "glLoadMatrixx", (uintptr_t)&glLoadMatrixx },
@@ -864,25 +1415,30 @@ so_default_dynlib default_dynlib[] = {
         { "glTexGenxOES", (uintptr_t)&ret0 },
         { "glTexGenxvOES", (uintptr_t)&ret0 },
         { "glTexImage2D", (uintptr_t)&glTexImage2D },
-        { "glTexParameterf", (uintptr_t)&glTexParameterf },
+        { "glTexImage3DOES", (uintptr_t)&ret0 },
+        { "glTexParameterf", (uintptr_t)&glTexParameterf_soloader },
         { "glTexParameterfv", (uintptr_t)&ret0 },
-        { "glTexParameteri", (uintptr_t)&glTexParameteri },
-        { "glTexParameteriv", (uintptr_t)&glTexParameteriv },
-        { "glTexParameterx", (uintptr_t)&glTexParameterx },
+        { "glTexParameteri", (uintptr_t)&glTexParameteri_soloader },
+        { "glTexParameteriv", (uintptr_t)&glTexParameteriv_soloader },
+        { "glTexParameterx", (uintptr_t)&glTexParameterx_soloader },
         { "glTexParameterxv", (uintptr_t)&ret0 },
         { "glTexSubImage2D", (uintptr_t)&glTexSubImage2D },
+        { "glTexSubImage3DOES", (uintptr_t)&ret0 },
         { "glTranslatef", (uintptr_t)&glTranslatef },
         { "glTranslatex", (uintptr_t)&glTranslatex },
         { "glUniform1f", (uintptr_t)&glUniform1f },
         { "glUniform1fv", (uintptr_t)&glUniform1fv },
         { "glUniform1i", (uintptr_t)&glUniform1i },
         { "glUniform1iv", (uintptr_t)&glUniform1iv },
+        { "glUniform2i", (uintptr_t)&glUniform2i },
         { "glUniform2f", (uintptr_t)&glUniform2f },
         { "glUniform2fv", (uintptr_t)&glUniform2fv },
         { "glUniform2iv", (uintptr_t)&glUniform2iv },
+        { "glUniform3i", (uintptr_t)&glUniform3i },
         { "glUniform3f", (uintptr_t)&glUniform3f },
         { "glUniform3fv", (uintptr_t)&glUniform3fv },
         { "glUniform3iv", (uintptr_t)&glUniform3iv },
+        { "glUniform4i", (uintptr_t)&glUniform4i },
         { "glUniform4f", (uintptr_t)&glUniform4f },
         { "glUniform4fv", (uintptr_t)&glUniform4fv },
         { "glUniform4iv", (uintptr_t)&glUniform4iv },
@@ -894,10 +1450,25 @@ so_default_dynlib default_dynlib[] = {
         { "glUseProgram", (uintptr_t)&glUseProgram },
         { "glValidateProgram", (uintptr_t)&ret0 },
         { "glVertexAttrib4f", (uintptr_t)&glVertexAttrib4f },
+        { "glVertexAttrib4fv", (uintptr_t)&glVertexAttrib4fv },
         { "glVertexAttribPointer", (uintptr_t)&glVertexAttribPointer },
         { "glVertexPointer", (uintptr_t)&glVertexPointer },
         { "glViewport", (uintptr_t)&glViewport },
         { "glWeightPointerOES", (uintptr_t)&ret0 },
+
+
+        // OpenSLES
+        { "SL_IID_ENGINE", (uintptr_t)&SL_IID_ENGINE },
+        { "SL_IID_ANDROIDCONFIGURATION", (uintptr_t)&SL_IID_ANDROIDCONFIGURATION },
+        { "SL_IID_ANDROIDSIMPLEBUFFERQUEUE", (uintptr_t)&SL_IID_ANDROIDSIMPLEBUFFERQUEUE },
+        { "SL_IID_BUFFERQUEUE", (uintptr_t)&SL_IID_BUFFERQUEUE },
+        { "SL_IID_METADATAEXTRACTION", (uintptr_t)&SL_IID_METADATAEXTRACTION },
+        { "SL_IID_PLAY", (uintptr_t)&SL_IID_PLAY },
+        { "SL_IID_PREFETCHSTATUS", (uintptr_t)&SL_IID_PREFETCHSTATUS },
+        { "SL_IID_RECORD", (uintptr_t)&SL_IID_RECORD },
+        { "SL_IID_SEEK", (uintptr_t)&SL_IID_SEEK },
+        { "SL_IID_VOLUME", (uintptr_t)&SL_IID_VOLUME },
+        { "slCreateEngine", (uintptr_t)&slCreateEngine_traced },
 
 
         // Pthread
@@ -907,12 +1478,12 @@ so_default_dynlib default_dynlib[] = {
         { "pthread_attr_setstacksize", (uintptr_t) &pthread_attr_setstacksize_soloader },
         { "pthread_attr_setschedparam", (uintptr_t) &ret0 },
 
-        { "pthread_cond_broadcast", (uintptr_t) &pthread_svelte_cond_broadcast },
-        { "pthread_cond_destroy", (uintptr_t) &pthread_svelte_cond_destroy },
-        { "pthread_cond_init", (uintptr_t) &pthread_svelte_cond_init },
-        { "pthread_cond_signal", (uintptr_t) &pthread_svelte_cond_signal },
-        { "pthread_cond_timedwait", (uintptr_t) &pthread_svelte_cond_timedwait },
-        { "pthread_cond_wait", (uintptr_t) &pthread_svelte_cond_wait },
+        { "pthread_cond_broadcast", (uintptr_t) &pthread_cond_broadcast_soloader },
+        { "pthread_cond_destroy", (uintptr_t) &pthread_cond_destroy_soloader },
+        { "pthread_cond_init", (uintptr_t) &pthread_cond_init_soloader },
+        { "pthread_cond_signal", (uintptr_t) &pthread_cond_signal_soloader },
+        { "pthread_cond_timedwait", (uintptr_t) &pthread_cond_timedwait_soloader },
+        { "pthread_cond_wait", (uintptr_t) &pthread_cond_wait_soloader },
 
         { "pthread_create", (uintptr_t) &pthread_create_soloader },
         { "pthread_detach", (uintptr_t) &pthread_detach_soloader },
@@ -925,16 +1496,16 @@ so_default_dynlib default_dynlib[] = {
         { "pthread_key_delete", (uintptr_t)&pthread_key_delete },
         { "pthread_kill", (uintptr_t)&pthread_kill_soloader },
 
-        { "pthread_mutex_destroy", (uintptr_t) &pthread_svelte_mutex_destroy },
-        { "pthread_mutex_init", (uintptr_t) &pthread_svelte_mutex_init },
-        { "pthread_mutex_lock", (uintptr_t) &pthread_svelte_mutex_lock },
-        { "pthread_mutex_trylock", (uintptr_t) &pthread_svelte_mutex_trylock },
-        { "pthread_mutex_unlock", (uintptr_t) &pthread_svelte_mutex_unlock },
-        { "pthread_mutexattr_destroy", (uintptr_t) &pthread_svelte_mutexattr_destroy },
-        { "pthread_mutexattr_init", (uintptr_t) &pthread_svelte_mutexattr_init },
-        { "pthread_mutexattr_settype", (uintptr_t) &pthread_svelte_mutexattr_settype },
+        { "pthread_mutex_destroy", (uintptr_t) &pthread_mutex_destroy_soloader },
+        { "pthread_mutex_init", (uintptr_t) &pthread_mutex_init_soloader },
+        { "pthread_mutex_lock", (uintptr_t) &pthread_mutex_lock_soloader },
+        { "pthread_mutex_trylock", (uintptr_t) &pthread_mutex_trylock_soloader },
+        { "pthread_mutex_unlock", (uintptr_t) &pthread_mutex_unlock_soloader },
+        { "pthread_mutexattr_destroy", (uintptr_t) &pthread_mutexattr_destroy_soloader },
+        { "pthread_mutexattr_init", (uintptr_t) &pthread_mutexattr_init_soloader },
+        { "pthread_mutexattr_settype", (uintptr_t) &pthread_mutexattr_settype_soloader },
         { "pthread_mutexattr_setpshared", (uintptr_t) &ret0 },
-        { "pthread_once", (uintptr_t)&pthread_svelte_once },
+        { "pthread_once", (uintptr_t)&pthread_once_soloader },
 
         { "pthread_self", (uintptr_t) &pthread_self_soloader },
         { "pthread_setname_np", (uintptr_t) &pthread_setname_np_soloader },
@@ -970,6 +1541,10 @@ so_default_dynlib default_dynlib[] = {
         { "iswxdigit", (uintptr_t)&iswxdigit },
         { "mbrlen", (uintptr_t)&mbrlen },
         { "mbrtowc", (uintptr_t)&mbrtowc },
+        { "mbsnrtowcs", (uintptr_t)&mbsnrtowcs },
+        { "mbsrtowcs", (uintptr_t)&mbsrtowcs },
+        { "mbstowcs", (uintptr_t)&mbstowcs },
+        { "mbtowc", (uintptr_t)&mbtowc },
         { "towlower", (uintptr_t)&towlower },
         { "towupper", (uintptr_t)&towupper },
         { "wcrtomb", (uintptr_t)&wcrtomb },
@@ -982,8 +1557,18 @@ so_default_dynlib default_dynlib[] = {
         { "wcslcpy", (uintptr_t)&wcslcpy },
         { "wcslen", (uintptr_t)&wcslen },
         { "wcsncasecmp", (uintptr_t)&wcsncasecmp },
+        { "wcsncmp", (uintptr_t)&wcsncmp },
         { "wcsncpy", (uintptr_t)&wcsncpy },
+        { "wcsnlen", (uintptr_t)&wcsnlen },
+        { "wcsnrtombs", (uintptr_t)&wcsnrtombs },
+        { "wcsstr", (uintptr_t)&wcsstr },
+        { "wcstod", (uintptr_t)&wcstod },
+        { "wcstof", (uintptr_t)&wcstof },
+        { "wcstol", (uintptr_t)&wcstol },
+        { "wcstoll", (uintptr_t)&wcstoll },
         { "wcstombs", (uintptr_t)&wcstombs },
+        { "wcstoul", (uintptr_t)&wcstoul },
+        { "wcstoull", (uintptr_t)&wcstoull },
         { "wcsxfrm", (uintptr_t)&wcsxfrm },
         { "wctob", (uintptr_t)&wctob },
         { "wctype", (uintptr_t)&wctype },
@@ -1005,6 +1590,7 @@ so_default_dynlib default_dynlib[] = {
         { "__errno", (uintptr_t)&__errno_soloader },
         { "strerror", (uintptr_t)&strerror_soloader },
         { "strerror_r", (uintptr_t)&strerror_r_soloader },
+        { "perror", (uintptr_t)&perror }, // TODO: errno translation
 
 
         // Strings
@@ -1037,6 +1623,8 @@ so_default_dynlib default_dynlib[] = {
 
         // Syscalls
         { "fork", (uintptr_t)&fork },
+        { "getpagesize", (uintptr_t)&getpagesize },
+        { "getpid", (uintptr_t)&getpid },
         { "sbrk", (uintptr_t)&sbrk },
         { "syscall", (uintptr_t)&syscall },
         { "sysconf", (uintptr_t)&ret0 },
@@ -1051,10 +1639,13 @@ so_default_dynlib default_dynlib[] = {
         { "difftime", (uintptr_t)&difftime },
         { "gettimeofday", (uintptr_t)&gettimeofday },
         { "gmtime", (uintptr_t)&gmtime },
+        { "gmtime64", (uintptr_t)&gmtime64 },
         { "gmtime_r", (uintptr_t)&gmtime_r },
         { "localtime", (uintptr_t)&localtime },
+        { "localtime64", (uintptr_t)&localtime64 },
         { "localtime_r", (uintptr_t)&localtime_r },
         { "mktime", (uintptr_t)&mktime },
+        { "mktime64", (uintptr_t)&mktime64 },
         { "nanosleep", (uintptr_t)&nanosleep },
         { "strftime", (uintptr_t)&strftime },
         { "time", (uintptr_t)&time },
@@ -1063,7 +1654,7 @@ so_default_dynlib default_dynlib[] = {
 
         // Temp
         { "mkstemp", (uintptr_t)&mkstemp },
-        //{ "mktemp", (uintptr_t)&mktemp },
+        { "mktemp", (uintptr_t)&mktemp },
         { "tmpfile", (uintptr_t)&tmpfile },
         { "tmpnam", (uintptr_t)&tmpnam },
 
@@ -1074,6 +1665,7 @@ so_default_dynlib default_dynlib[] = {
         { "atoi", (uintptr_t)&atoi },
         { "atol", (uintptr_t)&atol },
         { "atoll", (uintptr_t)&atoll },
+        { "bsearch", (uintptr_t)&bsearch },
         { "exit", (uintptr_t)&exit_soloader },
         { "lrand48", (uintptr_t)&lrand48 },
         { "prctl", (uintptr_t)&ret0 },
@@ -1118,7 +1710,11 @@ so_default_dynlib default_dynlib[] = {
 
 
         // Locale
+        { "freelocale", (uintptr_t)&freelocale },
+        { "localeconv", (uintptr_t)&localeconv },
+        { "newlocale", (uintptr_t)&newlocale },
         { "setlocale", (uintptr_t)&setlocale },
+        { "uselocale", (uintptr_t)&uselocale },
 
 
         // zlib
@@ -1139,8 +1735,25 @@ so_default_dynlib default_dynlib[] = {
         { "inflateInit2_", (uintptr_t)&inflateInit2_ },
         { "inflateInit_", (uintptr_t)&inflateInit_ },
         { "inflateReset", (uintptr_t)&inflateReset },
+        { "inflateReset2", (uintptr_t)&inflateReset2 },
         { "uncompress", (uintptr_t)&uncompress },
 };
+
+void *dlsym_soloader(void * handle, const char * symbol) {
+    (void)handle;
+
+    for (int i = 0; i < sizeof(default_dynlib) / sizeof(default_dynlib[0]); i++) {
+        if (strcmp(symbol, default_dynlib[i].symbol) == 0) {
+            void *address = (void *)default_dynlib[i].func;
+            port_trace("dlsym resolved: %s -> %p", symbol, address);
+            return address;
+        }
+    }
+
+    port_trace("dlsym missing: %s", symbol);
+    l_error("dlsym: Unknown symbol \"%s\".", symbol);
+    return NULL;
+}
 
 void resolve_imports(so_module* mod) {
     __sF_fake[0] = *stdin;

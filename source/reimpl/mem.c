@@ -21,10 +21,14 @@ void *sceClibMemclr(void *dst, size_t len) {
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offs) {
     l_warn("mmap(%p, %i, %i, %i, %i, %li)", addr, length, prot, flags, fd, offs);
 
-    if (length <= 0) {
+    if (!length) {
         return MAP_FAILED;
     }
-    void* ret= malloc(length);
+    void *ret = malloc(length);
+    if (!ret) {
+        l_error("mmap allocation failed for %u bytes", (unsigned)length);
+        return MAP_FAILED;
+    }
     memset(ret, 0, length);
     return ret;
 }
